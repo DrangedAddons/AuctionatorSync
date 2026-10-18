@@ -2,7 +2,7 @@
 ## Title: AuctionatorSync
 ## Notes: Shares Auctionator prices with your guild, friends list and Battle.net friends, so everyone sees the same, newest prices.
 ## Author: Dranged
-## Version: 0.4.0
+## Version: 0.5.0
 ## Dependencies: Auctionator
 ## X-DrangedAddons-Games: _classic_beta_, _forever_
 ## SavedVariables: AuctionatorSyncDB

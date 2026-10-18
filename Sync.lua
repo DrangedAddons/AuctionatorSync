@@ -7,9 +7,10 @@
 -- Only changed prices travel: a rescan that finds the same price sends nothing.
 --
 -- Messages (all carry r = Auctionator's realm key, so other realms/factions are ignored):
---   HELLO {since?}   "I'm here"; with since, "and I'd like what changed since then"
---   PONG  {n?}       answer to HELLO; n = how many prices changed here since `since`
---   REQ   {since}    sent to the peer with the most to offer
+--   HELLO {since?, after?}  "I'm here"; with since, "and I'd like what changed since then";
+--                    after = my last full scan, so prices seen before it aren't worth sending
+--   PONG  {n?}       answer to HELLO; n = how many prices qualify
+--   REQ   {since, after?}   sent to the peer with the most to offer
 --   DATA  {x, e, b, fin?, cu?}  one batch of a transfer x: e = {key, price, available, ts - b, ...}
 --                    fin marks the last batch; cu marks a catch-up reply
 local _, ns = ...
@@ -226,13 +227,14 @@ function ns.SendEntries(targets, list, prio, opts)
   end
 end
 
--- Prices that changed here after `since` and were seen within maxAgeDays.
-local function Collect(since)
+-- Prices that changed here after `since`, seen within maxAgeDays and after `after` (the
+-- asker's last full scan: anything older than that, their own scan already beat).
+local function Collect(since, after)
   local r, db = Realm(), DB()
   local list = {}
   if not r or not db or type(db.db) ~= "table" then return list end
   since = since or 0
-  local oldest = ns.Now() - ns.db.maxAgeDays * 86400
+  local oldest = math.max(ns.Now() - ns.db.maxAgeDays * 86400, after or 0)
   for key, entry in pairs(db.db) do
     if type(entry) == "table" and (entry.m or 0) > 0 and ChangedAt(r, key, entry) > since then
       local ts = SeenAt(r, key, entry)
@@ -311,11 +313,83 @@ local function FinishTransfer(tkey, peer, incomplete)
   end
 end
 
+----------------------------------------------------------------------------------------------
+-- Auctionator's full scans. Auctionator announces scan start/finish on its EventBus; we
+-- register a listener there (no change to Auctionator). While a scan runs, a catch-up waits;
+-- right after one, our prices are the newest, so there's nothing to catch up.
+
+local SCAN_TIMEOUT = 900  -- forget a scan that never reported back after 15 minutes
+local scanning, scanTimer = false, nil
+local deferred -- nil, or the `verbose` of a catch-up waiting for the scan to finish
+
+local function ScanEnded(completed)
+  scanning = false
+  if scanTimer then scanTimer:Cancel(); scanTimer = nil end
+  local r = Realm()
+  if completed and r then
+    r.lastFullScan = ns.Now()
+    if deferred ~= nil then
+      Say(deferred, "Your scan is the newest, so there's nothing to catch up.")
+      r.lastCatchUp = r.lastFullScan
+    end
+    deferred = nil
+  elseif deferred ~= nil then
+    local verbose = deferred
+    deferred = nil
+    ns.CatchUp(verbose)
+  end
+end
+
+local scanListener = { kinds = {} }
+function scanListener:ReceiveEvent(event)
+  local kind = self.kinds[event]
+  if kind == "start" then
+    scanning = true
+    if scanTimer then scanTimer:Cancel() end
+    scanTimer = C_Timer.NewTimer(SCAN_TIMEOUT, function() ScanEnded(false) end)
+    -- a catch-up still asking around is pointless now: the scan will be newer
+    if catchUp and not catchUp.chosen then
+      deferred = deferred or catchUp.verbose or false
+      catchUp = nil
+    end
+  elseif kind == "complete" then
+    ScanEnded(true)
+  elseif kind == "failed" then
+    ScanEnded(false)
+  end
+end
+
+local scanEventsRegistered = false
+function ns.WatchScans()
+  if scanEventsRegistered or not (Auctionator and Auctionator.EventBus) then return end
+  local names = {}
+  for _, group in ipairs({ Auctionator.FullScan, Auctionator.IncrementalScan }) do
+    local ev = group and group.Events
+    if ev then
+      for field, kind in pairs({ ScanStart = "start", ScanComplete = "complete", ScanFailed = "failed" }) do
+        if ev[field] then
+          scanListener.kinds[ev[field]] = kind
+          names[#names + 1] = ev[field]
+        end
+      end
+    end
+  end
+  if #names == 0 then return end
+  local ok, err = pcall(Auctionator.EventBus.Register, Auctionator.EventBus, scanListener, names)
+  scanEventsRegistered = ok
+  if not ok then ns.Debug("couldn't watch Auctionator scans: %s", tostring(err)) end
+end
+
 function ns.CatchUp(verbose)
   if verbose then ns.FlushShared() end -- Sync now also sends what's collected so far
   local r = Realm()
   if not r then
     Say(verbose, "Auctionator's prices aren't loaded yet; try again in a moment.")
+    return
+  end
+  if scanning then
+    if verbose then ns.Print("Waiting for your scan to finish first.") end
+    deferred = deferred or verbose
     return
   end
   if catchUp and catchUp.chosen then
@@ -336,7 +410,7 @@ function ns.CatchUp(verbose)
     return
   end
   for _, t in ipairs(targets) do
-    ns.Send(t, { t = "HELLO", r = ns.RealmKey(), since = since }, "ALERT")
+    ns.Send(t, { t = "HELLO", r = ns.RealmKey(), since = since, after = r.lastFullScan }, "ALERT")
   end
   if verbose then ns.Print("Checking for changed prices...") end
   local mine = catchUp
@@ -366,7 +440,7 @@ function ns.CatchUp(verbose)
     if verbose or bestN > BATCH then
       Say(verbose, "Catching up %s from %s...", ns.Plural(bestN, "price"), peer.name)
     end
-    ns.Send(ns.ReplyTarget(peer), { t = "REQ", r = ns.RealmKey(), since = mine.since }, "ALERT")
+    ns.Send(ns.ReplyTarget(peer), { t = "REQ", r = ns.RealmKey(), since = mine.since, after = r.lastFullScan }, "ALERT")
   end)
 end
 
@@ -390,7 +464,7 @@ function ns.OnMessage(msg, peer)
 
   if msg.t == "HELLO" then
     local reply = { t = "PONG", r = ns.RealmKey() }
-    if msg.since then reply.n = #Collect(tonumber(msg.since) or 0) end
+    if msg.since then reply.n = #Collect(tonumber(msg.since) or 0, tonumber(msg.after)) end
     ns.Send(ns.ReplyTarget(peer), reply, "ALERT")
 
   elseif msg.t == "PONG" then
@@ -399,7 +473,7 @@ function ns.OnMessage(msg, peer)
   elseif msg.t == "REQ" then
     if serving[peerKey] then return end
     serving[peerKey] = true
-    local list = Collect(tonumber(msg.since) or 0)
+    local list = Collect(tonumber(msg.since) or 0, tonumber(msg.after))
     ns.SendEntries({ ns.ReplyTarget(peer) }, list, "BULK", { cu = true })
     ns.Debug("sending %d changed prices to %s", #list, peer.name)
     C_Timer.After(120, function() serving[peerKey] = nil end)
@@ -476,6 +550,7 @@ ns.On("PLAYER_LOGIN", function()
   if not ns.canEncode then return end
   PruneTimestamps()
   ns.HookAuctionator()
+  ns.WatchScans()
   C_Timer.NewTicker(10, ns.HookAuctionator)
   C_Timer.NewTicker(SHARE_INTERVAL, ns.FlushShared)
 end)

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0
+- **No catch-up from friends right after your own scan.** AuctionatorSync now knows when an Auctionator full scan starts and finishes (it listens to Auctionator's own scan events and still changes nothing in Auctionator).
+  - While a scan runs, a catch-up waits for it. If it was still asking around, it's called off.
+  - When the scan finishes, your prices are the newest, so instead of fetching prices you'd only throw away you get one line: "Your scan is the newest, so there's nothing to catch up."
+  - Later catch-ups only ask friends for prices they saw *after* your last full scan, so anything your scan already covers isn't sent.
+
 ## 0.4.0
 - **Sign-in message:** a few seconds after you're in the world, one line says the addon is ready, who it syncs with and that `/async` has the options. A few seconds later, one more line gives the catch-up result: "Up to date with Bob and Alice.", "Caught up: updated 812 prices from Bob." or "No one online with AuctionatorSync yet."
 - **Shorter, clearer chat.** Updates from friends are one line: "Updated 37 prices from Bob." Updates from several friends arriving together share one line ("Updated 52 prices from Bob, Alice and 2 others."). Nothing is said when nothing changed, and sending is never announced. Big numbers get thousands separators.
