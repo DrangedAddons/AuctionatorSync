@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.1
+- New icon: a goblin auctioneer behind his podium, gavel raised. Shown in the game's AddOns list and in the DrangedAddons manager.
+
 ## 0.7.0
 - **Online list grouped by version.** The `/async` window shows everyone online with AuctionatorSync, you included, as one compact line of counts per version ("v0.7.0 ×3   v0.6.1 ×1"). Click the header to expand it into names per version, and click again to collapse; the window remembers which you chose. The newest version is green and older ones are orange, so you can see who needs to update. Only people who are actually online are listed, and the window resizes to fit.
 - `/async status` lists who's online the same way, grouped by version.
