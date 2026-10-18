@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.0
+**New way of syncing at login: compare with a host.** Everyone needs 0.9.0; older versions can't act as host.
+- When you log in, the addon picks a host automatically: whoever online has been on longest, preferring people who've finished their own sync. You never pick anything yourself.
+- You and the host compare prices item by item. For each item, whichever of you saw it more recently wins. You get every price where the host's is newer or you don't have it, and the host gets every price where yours is newer.
+- The host then passes the new prices you brought on to everyone else online. Everyone online ends up with the newest prices any of you has seen, and that combined data travels on to whoever logs in next. Prices from a group of friends you were never online with now reach everyone too, carried along by whoever overlaps both groups.
+- If the host logs off or goes quiet partway through, the addon moves on to the next person.
+- Alone, nothing happens. Your prices simply go into the compare the next time you're online with someone.
+- Replaces the old one-way catch-up, which only pulled toward whoever logged in, from just one friend, and could skip data from friends you'd never been online with.
+- Everything still travels as hidden addon data, never chat. The chat line reads "Synced: updated N prices." or "Up to date.", and you can turn it off.
+- Live sharing of your new scans to friends online is unchanged.
+
 ## 0.8.0
 - **Your scans reach friends even if nobody was online when you scanned.** Changed prices that couldn't be sent now wait in a queue, kept across logouts, instead of being dropped. As soon as anyone with AuctionatorSync comes online, whether they log in while you're on or you log in while they're on, the queue goes out a few seconds later (one guild message covers the whole guild). Before, a catch-up only ever pulled prices toward whoever had just logged in, so your scan could miss friends who were online before you.
 - An item a friend has since updated with a newer price is dropped from your queue; an item whose price went back to what you last sent is skipped.

@@ -8,7 +8,7 @@ local OPTIONS = {
   { key = "friends", label = "Sync with my friends list" },
   { key = "bnet", label = "Sync with Battle.net friends on this realm" },
   { key = "shareScans", label = "Share my scans automatically" },
-  { key = "catchUpOnLogin", label = "Catch up on prices I missed when I log in" },
+  { key = "catchUpOnLogin", label = "Sync with friends online when I log in" },
   { key = "announce", label = "Show chat messages",
     tip = "Sign-in and sync messages in chat. Replies to /async commands and Sync now always show." },
 }
@@ -239,7 +239,7 @@ local function Refresh()
 
   local realm = ns.store.realms[ns.RealmKey() or ""]
   local last = realm and realm.lastCatchUp or 0
-  frame.status:SetText(string.format("Realm: %s\nLast catch-up: %s", tostring(ns.RealmKey() or "?"),
+  frame.status:SetText(string.format("Realm: %s\nLast sync: %s", tostring(ns.RealmKey() or "?"),
     last > 0 and date("%d %b %H:%M", last) or "never"))
 end
 

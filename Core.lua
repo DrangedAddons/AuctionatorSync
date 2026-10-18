@@ -6,7 +6,7 @@ local addonName, ns = ...
 local GetMeta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
 ns.VERSION = (GetMeta and GetMeta(addonName, "Version")) or "?"
 ns.PREFIX = "AucSync"
-ns.PROTOCOL = 1
+ns.PROTOCOL = 2
 
 -- Account-wide: the Auctionator price database these settings act on is account-wide too.
 local DEFAULTS = {
@@ -14,7 +14,7 @@ local DEFAULTS = {
   friends = true,        -- sync with the in-game friends list
   bnet = true,           -- sync with Battle.net friends playing on this realm
   shareScans = true,     -- send my changed prices on the share timer
-  catchUpOnLogin = true, -- ask for prices I missed when I log in
+  catchUpOnLogin = true, -- sync with whoever's online when I log in (the host compare)
   announce = true,       -- automatic chat messages (sign-in, sync results)
   maxAgeDays = 7,        -- catch-ups only carry prices seen in the last N days
 }
