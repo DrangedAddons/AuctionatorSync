@@ -246,24 +246,63 @@ local function Collect(since)
 end
 
 ----------------------------------------------------------------------------------------------
+-- Chat
+--
+-- Automatic messages (sign-in, sync results) go through ns.Notice and obey the "Show chat
+-- messages" box. Answers to something the player did (/async commands, Sync now) and errors
+-- always show. Sends are never announced, and updates arriving from several friends within a
+-- few seconds share one line.
+
+local REPORT_DELAY = 10
+local report, reportTimer = {}, nil -- name -> changed prices, for the combined line
+
+local function FlushReport()
+  reportTimer = nil
+  local names, total = {}, 0
+  for name, n in pairs(report) do
+    names[#names + 1] = name
+    total = total + n
+  end
+  wipe(report)
+  if total == 0 then return end
+  table.sort(names)
+  ns.Notice("Updated %s from %s.", ns.Plural(total, "price"), ns.NameList(names))
+end
+
+local function Report(name, changed)
+  if changed <= 0 then return end
+  report[name] = (report[name] or 0) + changed
+  if not reportTimer then reportTimer = C_Timer.NewTimer(REPORT_DELAY, FlushReport) end
+end
+
+----------------------------------------------------------------------------------------------
 -- Catching up
 
 local catchUp -- { started, since, offers = { [peerKey] = n }, chosen, verbose }
 
+-- For catch-ups: the player asked (Sync now) -> always say; automatic (login) -> only if ticked.
+local function Say(verbose, fmt, ...)
+  if verbose then ns.Print(fmt, ...) else ns.Notice(fmt, ...) end
+end
+
 -- A transfer arrives in batches of BATCH prices; each batch is applied as it lands, but chat
 -- only hears about it once, after the last batch, with the totals for the whole transfer.
-local transfers = {} -- peerKey .. "/" .. x -> { name, changed, received, corrections = {}, timer }
+local transfers = {} -- peerKey .. "/" .. x -> { name, changed, received, corrections, timer, kind, verbose }
 
 local function FinishTransfer(tkey, peer, incomplete)
   local tr = transfers[tkey]
   if not tr then return end
   transfers[tkey] = nil
   if tr.timer then tr.timer:Cancel() end
-  if ns.db.announce and tr.changed > 0 then
-    ns.Print("Synced %d changed price%s from %s (%d checked)%s.", tr.changed, tr.changed == 1 and "" or "s",
-      tr.name, tr.received, incomplete and ", transfer cut short" or "")
-  elseif tr.verbose then
-    ns.Print("Nothing new from %s - your prices match.", tr.name)
+  local cut = incomplete and " (stopped partway; the rest comes with the next sync)" or ""
+  if tr.kind == "catchup" then
+    if tr.changed > 0 then
+      Say(tr.verbose, "Caught up: updated %s from %s%s.", ns.Plural(tr.changed, "price"), tr.name, cut)
+    else
+      Say(tr.verbose, "Up to date: your prices already match %s's%s.", tr.name, cut)
+    end
+  else
+    Report(tr.name, tr.changed)
   end
   -- They sent prices that are older than ours and different: send ours back so they're fixed too.
   if peer and #tr.corrections > 0 then
@@ -276,37 +315,57 @@ function ns.CatchUp(verbose)
   if verbose then ns.FlushShared() end -- Sync now also sends what's collected so far
   local r = Realm()
   if not r then
-    if verbose then ns.Print("Auctionator's price database isn't ready yet.") end
+    Say(verbose, "Auctionator's prices aren't loaded yet; try again in a moment.")
+    return
+  end
+  if catchUp and catchUp.chosen then
+    local peer = ns.peers[catchUp.chosen]
+    Say(verbose, "Already catching up from %s.", peer and peer.name or "a friend")
     return
   end
   local since = math.max(0, (r.lastCatchUp or 0) - CATCHUP_MARGIN)
   catchUp = { started = ns.Now(), since = since, offers = {}, verbose = verbose }
   local targets = ns.AllTargets()
   if #targets == 0 then
-    if verbose then ns.Print("No one to sync with (no guild, friends or Battle.net friends online).") end
+    if not (ns.db.guild or ns.db.friends or ns.db.bnet) then
+      Say(verbose, "Syncing is off: tick guild, friends or Battle.net in |cffffd100/async|r.")
+    else
+      Say(verbose, "No guild members or friends online to sync with.")
+    end
     catchUp = nil
     return
   end
   for _, t in ipairs(targets) do
     ns.Send(t, { t = "HELLO", r = ns.RealmKey(), since = since }, "ALERT")
   end
-  if verbose then ns.Print("Asking %d place%s for changed prices...", #targets, #targets == 1 and "" or "s") end
+  if verbose then ns.Print("Checking for changed prices...") end
   local mine = catchUp
   C_Timer.After(PONG_WAIT, function()
     if catchUp ~= mine then return end
-    local bestKey, bestN = nil, 0
+    local bestKey, bestN, names = nil, 0, {}
     for key, n in pairs(mine.offers) do
+      if ns.peers[key] then names[#names + 1] = ns.peers[key].name end
       if n > bestN then bestKey, bestN = key, n end
     end
+    if #names == 0 then
+      Say(verbose, "No one online with AuctionatorSync yet. Your scans are shared once they are.")
+      r.lastCatchUp = mine.started
+      catchUp = nil
+      return
+    end
     if not bestKey then
-      if verbose then ns.Print("You're up to date.") end
+      table.sort(names)
+      Say(verbose, "Up to date with %s.", ns.NameList(names))
       r.lastCatchUp = mine.started
       catchUp = nil
       return
     end
     mine.chosen = bestKey
     local peer = ns.peers[bestKey]
-    if verbose then ns.Print("Getting up to %d price%s from %s.", bestN, bestN == 1 and "" or "s", peer.name) end
+    -- Only worth a line of its own when it'll take a while (more than one batch).
+    if verbose or bestN > BATCH then
+      Say(verbose, "Catching up %s from %s...", ns.Plural(bestN, "price"), peer.name)
+    end
     ns.Send(ns.ReplyTarget(peer), { t = "REQ", r = ns.RealmKey(), since = mine.since }, "ALERT")
   end)
 end
@@ -351,8 +410,9 @@ function ns.OnMessage(msg, peer)
     local tkey = peerKey .. "/" .. tostring(msg.x)
     local tr = transfers[tkey]
     if not tr then
+      local isMyCatchUp = msg.cu and catchUp and catchUp.chosen == peerKey
       tr = { name = peer.name, changed = 0, received = 0, corrections = {},
-        verbose = msg.cu and catchUp and catchUp.chosen == peerKey and catchUp.verbose }
+        kind = isMyCatchUp and "catchup" or "update", verbose = isMyCatchUp and catchUp.verbose }
       transfers[tkey] = tr
     end
     local entries = DB() and DB().db
@@ -370,14 +430,20 @@ function ns.OnMessage(msg, peer)
       end
     end
     if tr.timer then tr.timer:Cancel() end
-    if msg.fin then
-      FinishTransfer(tkey, peer)
-      if msg.cu and catchUp and catchUp.chosen == peerKey then
-        r.lastCatchUp = catchUp.started
+    local function EndCatchUp(done)
+      if tr.kind == "catchup" and catchUp and catchUp.chosen == peerKey then
+        if done then r.lastCatchUp = catchUp.started end
         catchUp = nil
       end
+    end
+    if msg.fin then
+      FinishTransfer(tkey, peer)
+      EndCatchUp(true)
     else
-      tr.timer = C_Timer.NewTimer(ANNOUNCE_FALLBACK, function() FinishTransfer(tkey, peer, true) end)
+      tr.timer = C_Timer.NewTimer(ANNOUNCE_FALLBACK, function()
+        FinishTransfer(tkey, peer, true)
+        EndCatchUp(false)
+      end)
     end
   end
 end
@@ -396,37 +462,71 @@ local function PruneTimestamps()
   end
 end
 
+local function SourcesText()
+  local list = {}
+  if ns.db.guild then list[#list + 1] = "guild" end
+  if ns.db.friends then list[#list + 1] = "friends" end
+  if ns.db.bnet then list[#list + 1] = "Battle.net friends" end
+  if #list == 0 then return nil end
+  if #list == 1 then return list[1] end
+  return table.concat(list, ", ", 1, #list - 1) .. " and " .. list[#list]
+end
+
 ns.On("PLAYER_LOGIN", function()
-  if not ns.canEncode then
-    ns.Print("|cffff5555this client has no C_EncodingUtil; syncing is off.|r")
-    return
-  end
+  if not ns.canEncode then return end
   PruneTimestamps()
   ns.HookAuctionator()
   C_Timer.NewTicker(10, ns.HookAuctionator)
   C_Timer.NewTicker(SHARE_INTERVAL, ns.FlushShared)
+end)
+
+-- Once per session, after the first loading screen: the sign-in line, then the catch-up.
+local greeted = false
+ns.On("PLAYER_ENTERING_WORLD", function()
+  if greeted then return end
+  greeted = true
+  -- A few seconds in, so the line isn't lost in the burst of chat that follows a loading screen.
+  C_Timer.After(4, function()
+    if not ns.canEncode then
+      ns.Print("|cffff5555Can't sync: this game client is missing C_EncodingUtil.|r")
+      return
+    end
+    local sources = SourcesText()
+    if sources then
+      ns.Notice("v%s ready. Syncing prices with your %s. |cffffd100/async|r for options.", ns.VERSION, sources)
+    else
+      ns.Notice("v%s ready, but syncing is off (nothing ticked). |cffffd100/async|r for options.", ns.VERSION)
+    end
+  end)
   -- Give the guild roster and friends list a moment to arrive.
   C_Timer.After(10, function()
+    if not ns.canEncode then return end
     ns.HookAuctionator()
     ns.RefreshRosters()
     if ns.db.catchUpOnLogin then ns.CatchUp(false) else ns.Hello() end
   end)
 end)
 
+local VIA = { guild = "guild", friend = "friend", bnet = "Battle.net" }
+
 function ns.PrintStatus()
   local r = Realm()
-  ns.Print("v%s, realm %s", ns.VERSION, tostring(ns.RealmKey()))
+  ns.Print("v%s on %s.", ns.VERSION, tostring(ns.RealmKey() or "?"))
   if r then
     local count = 0
     for _ in pairs(r.ts) do count = count + 1 end
-    ns.Print("%d prices with sync timestamps; last catch-up %s", count,
-      (r.lastCatchUp or 0) > 0 and date("%Y-%m-%d %H:%M", r.lastCatchUp) or "never")
+    ns.Print("Tracking %s. Last catch-up: %s.", ns.Plural(count, "price"),
+      (r.lastCatchUp or 0) > 0 and date("%d %b %H:%M", r.lastCatchUp) or "never")
   end
-  local any = false
+  local list = {}
   for _, peer in pairs(ns.peers) do
-    any = true
-    ns.Print("  %s (%s, v%s)%s", peer.name, peer.via, tostring(peer.version),
-      peer.otherRealm and " - other realm/faction" or "")
+    list[#list + 1] = string.format("%s (%s%s)", peer.name, VIA[peer.via] or peer.via,
+      peer.otherRealm and ", other realm/faction" or "")
   end
-  if not any then ns.Print("  no one else with AuctionatorSync seen yet") end
+  table.sort(list)
+  if #list > 0 then
+    ns.Print("Seen this session: %s.", table.concat(list, ", "))
+  else
+    ns.Print("No one else with AuctionatorSync seen this session.")
+  end
 end

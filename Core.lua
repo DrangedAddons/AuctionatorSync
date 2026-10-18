@@ -13,15 +13,38 @@ local DEFAULTS = {
   guild = true,          -- sync with guild members
   friends = true,        -- sync with the in-game friends list
   bnet = true,           -- sync with Battle.net friends playing on this realm
-  shareScans = true,     -- send my new scan results straight away
+  shareScans = true,     -- send my changed prices on the share timer
   catchUpOnLogin = true, -- ask for prices I missed when I log in
-  announce = true,       -- chat line when prices arrive
+  announce = true,       -- automatic chat messages (sign-in, sync results)
   maxAgeDays = 7,        -- catch-ups only carry prices seen in the last N days
 }
 
+-- Always shown: answers to something the player did, and errors.
 function ns.Print(fmt, ...)
   local text = select("#", ...) > 0 and string.format(fmt, ...) or fmt
   DEFAULT_CHAT_FRAME:AddMessage("|cff33ccffAuctionatorSync|r: " .. text)
+end
+
+-- Automatic messages: only while "Show chat messages" is ticked.
+function ns.Notice(fmt, ...)
+  if ns.db and ns.db.announce then ns.Print(fmt, ...) end
+end
+
+function ns.Num(n)
+  return BreakUpLargeNumbers and BreakUpLargeNumbers(n) or tostring(n)
+end
+
+function ns.Plural(n, word)
+  return ns.Num(n) .. " " .. word .. (n == 1 and "" or "s")
+end
+
+-- "Bob", "Bob and Alice", "Bob, Alice and Cat", "Bob, Alice and 3 others"
+function ns.NameList(names)
+  local n = #names
+  if n <= 1 then return names[1] or "" end
+  if n == 2 then return names[1] .. " and " .. names[2] end
+  if n == 3 then return names[1] .. ", " .. names[2] .. " and " .. names[3] end
+  return names[1] .. ", " .. names[2] .. " and " .. (n - 2) .. " others"
 end
 
 function ns.Debug(fmt, ...)
@@ -86,13 +109,11 @@ SlashCmdList.AUCTIONATORSYNC = function(msg)
     ns.PrintStatus()
   elseif cmd == "debug" then
     ns.db.debug = not ns.db.debug
-    ns.Print("debug %s", ns.db.debug and "on" or "off")
+    ns.Print("Debug messages %s.", ns.db.debug and "on" or "off")
   elseif cmd == "" then
     ns.ToggleWindow()
   else
-    ns.Print("/async - open the window")
-    ns.Print("/async sync - catch up from friends now")
-    ns.Print("/async status - who's online with AuctionatorSync")
-    ns.Print("/async debug - toggle debug messages")
+    ns.Print("|cffffd100/async|r window · |cffffd100/async sync|r sync now · "
+      .. "|cffffd100/async status|r what's synced · |cffffd100/async debug|r debug messages")
   end
 end

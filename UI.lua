@@ -9,7 +9,8 @@ local OPTIONS = {
   { key = "bnet", label = "Sync with Battle.net friends on this realm" },
   { key = "shareScans", label = "Share my scans automatically" },
   { key = "catchUpOnLogin", label = "Catch up on prices I missed when I log in" },
-  { key = "announce", label = "Say in chat when new prices arrive" },
+  { key = "announce", label = "Show chat messages",
+    tip = "Sign-in and sync messages in chat. Replies to /async commands and Sync now always show." },
 }
 
 local function Ago(ts)
@@ -80,6 +81,15 @@ local function Build()
       ns.db[self.key] = self:GetChecked() and true or false
       Refresh()
     end)
+    if opt.tip then
+      cb:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(opt.label)
+        GameTooltip:AddLine(opt.tip, 1, 1, 1, true)
+        GameTooltip:Show()
+      end)
+      cb:SetScript("OnLeave", GameTooltip_Hide)
+    end
     table.insert(frame.checks, cb)
     y = y - 26
   end
