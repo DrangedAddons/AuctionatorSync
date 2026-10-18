@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0
+- **Price check in `/async`:** the latest item whose price changed, as an item button with its icon, name, new price (and what it was), and whether it came from your scan or a friend, and when. Hover for the full tooltip, including Auctionator's price lines; Shift-click to link it in chat. If a friend's price for the same item matches, you're in sync.
+- **You no longer sync with yourself.** Your own messages could come back to you and be taken for a friend's (you'd see "Catching up ... from <your own name>"). Every message now carries a random per-login ID, and anything carrying your own ID or name is ignored.
+- **Accurate catch-ups after a scan** (replaces 0.5.0's "nothing to catch up"). A catch-up still waits for a running scan, then asks a friend for what the scan didn't cover: your request lists the items your scan priced, and the friend skips those it saw before your scan, since yours are newer. Prices for items your scan didn't see (nothing listed at the time) still come through, as does anything newer than your scan.
+- Friends who were offline when you scanned get your changes in their next catch-up, as before; friends online get them with the next update.
+
 ## 0.5.0
 - **No catch-up from friends right after your own scan.** AuctionatorSync now knows when an Auctionator full scan starts and finishes (it listens to Auctionator's own scan events and still changes nothing in Auctionator).
   - While a scan runs, a catch-up waits for it. If it was still asking around, it's called off.

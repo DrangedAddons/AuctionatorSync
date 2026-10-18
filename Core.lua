@@ -62,7 +62,15 @@ function ns.ShortName(name)
   return (name:gsub("%-.*$", "")):lower()
 end
 
-ns.playerName = UnitName("player")
+-- Random per-login ID stamped on every message, so our own messages (guild echo, a second
+-- copy of ourselves) are always recognised and dropped, whatever the name looks like.
+ns.SESSION = string.format("%x%04x", time(), math.random(0, 0xffff))
+
+-- Looked up each time: at load the player's name may not be known yet.
+function ns.IsMe(name)
+  local me = UnitName("player")
+  return name ~= nil and me ~= nil and ns.ShortName(name) == ns.ShortName(me)
+end
 
 local events = CreateFrame("Frame")
 ns.events = events

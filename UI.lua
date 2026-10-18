@@ -1,4 +1,4 @@
--- /async window: settings, Sync now, and who's online with AuctionatorSync.
+-- /async window: settings, Sync now, the price check item, and who's online with AuctionatorSync.
 local _, ns = ...
 
 local frame
@@ -17,14 +17,153 @@ local function Ago(ts)
   local s = ns.Now() - (ts or 0)
   if s < 60 then return "just now" end
   if s < 3600 then return floor(s / 60) .. "m ago" end
-  return floor(s / 3600) .. "h ago"
+  if s < 86400 then return floor(s / 3600) .. "h ago" end
+  return floor(s / 86400) .. "d ago"
+end
+
+local function Money(copper)
+  if not copper then return "?" end
+  if GetMoneyString then return GetMoneyString(copper, true) end
+  if C_CurrencyInfo and C_CurrencyInfo.GetCoinTextureString then
+    return C_CurrencyInfo.GetCoinTextureString(copper)
+  end
+  return tostring(copper) .. "c"
 end
 
 local VIA = { guild = "Guild", friend = "Friend", bnet = "Battle.net" }
 
+----------------------------------------------------------------------------------------------
+-- Price check: the latest changed price, as an item button. Friends compare it to check
+-- they're in sync; the tooltip also shows Auctionator's own price lines.
+
+local GetInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+local GetIcon = (C_Item and C_Item.GetItemIconByID) or GetItemIcon
+local loading = {}
+
+local function RefreshPriceCheck()
+  local pc = frame.priceCheck
+  local c = ns.LastChange()
+  local id = c and ns.ItemIDFromKey(c.key)
+  pc.itemID = id
+  if not id then
+    pc.icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+    pc.button:SetBackdropBorderColor(0.3, 0.3, 0.35, 1)
+    pc.name:SetText("|cff999999No price changes yet|r")
+    pc.price:SetText("")
+    pc.source:SetText("|cff999999Scan the auction house, or wait for a friend's update.|r")
+    return
+  end
+
+  local name, link, quality = GetInfo(id)
+  pc.link = link
+  pc.icon:SetTexture(GetIcon(id) or "Interface\\Icons\\INV_Misc_QuestionMark")
+  local r, g, b = 1, 1, 1
+  if quality and C_Item and C_Item.GetItemQualityColor then
+    r, g, b = C_Item.GetItemQualityColor(quality)
+  elseif quality and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[quality] then
+    local q = ITEM_QUALITY_COLORS[quality]
+    r, g, b = q.r, q.g, q.b
+  end
+  pc.button:SetBackdropBorderColor(r, g, b, 1)
+  if name then
+    pc.name:SetText(name)
+    pc.name:SetTextColor(r, g, b)
+  else
+    pc.name:SetText("Item " .. id)
+    pc.name:SetTextColor(1, 1, 1)
+    -- not in the item cache yet: refresh once it loads
+    if Item and Item.CreateFromItemID and not loading[id] then
+      loading[id] = true
+      Item:CreateFromItemID(id):ContinueOnItemLoad(function()
+        loading[id] = nil
+        if frame:IsShown() then RefreshPriceCheck() end
+      end)
+    end
+  end
+
+  -- Auctionator's current price (it can only differ if something changed it since)
+  local db = Auctionator and Auctionator.Database and Auctionator.Database.db
+  local entry = type(db) == "table" and db[c.key]
+  local now = type(entry) == "table" and entry.m or c.price
+  local text = Money(now)
+  if c.was and c.was > 0 and c.was ~= now then
+    text = text .. "  |cff999999was " .. Money(c.was) .. "|r"
+  end
+  pc.price:SetText(text)
+  pc.source:SetText(string.format("|cff999999%s · %s|r", c.from and ("From " .. c.from) or "From your scan", Ago(c.at)))
+end
+
+local function BuildPriceCheck(y)
+  local pc = {}
+  frame.priceCheck = pc
+
+  local header = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  header:SetPoint("TOPLEFT", 16, y)
+  header:SetText("Price check")
+
+  local why = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  why:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -3)
+  why:SetPoint("RIGHT", frame, "RIGHT", -16, 0)
+  why:SetJustifyH("LEFT")
+  why:SetTextColor(0.6, 0.6, 0.6)
+  why:SetText("The latest price change. If a friend's matches, you're in sync.")
+
+  local button = CreateFrame("Button", nil, frame, "BackdropTemplate")
+  button:SetSize(40, 40)
+  button:SetPoint("TOPLEFT", why, "BOTTOMLEFT", 0, -6)
+  button:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+  button:RegisterForClicks("LeftButtonUp")
+  pc.button = button
+
+  pc.icon = button:CreateTexture(nil, "ARTWORK")
+  pc.icon:SetPoint("TOPLEFT", 1, -1)
+  pc.icon:SetPoint("BOTTOMRIGHT", -1, 1)
+  pc.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+
+  local highlight = button:CreateTexture(nil, "HIGHLIGHT")
+  highlight:SetAllPoints(pc.icon)
+  highlight:SetColorTexture(1, 1, 1, 0.15)
+
+  button:SetScript("OnEnter", function(self)
+    if not pc.itemID then return end
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    if GameTooltip.SetItemByID then
+      GameTooltip:SetItemByID(pc.itemID)
+    else
+      GameTooltip:SetHyperlink("item:" .. pc.itemID)
+    end
+    GameTooltip:Show()
+  end)
+  button:SetScript("OnLeave", GameTooltip_Hide)
+  -- Shift-click links it in chat, like any item button.
+  button:SetScript("OnClick", function()
+    if pc.link and HandleModifiedItemClick then HandleModifiedItemClick(pc.link) end
+  end)
+
+  pc.name = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  pc.name:SetPoint("TOPLEFT", button, "TOPRIGHT", 8, -1)
+  pc.name:SetPoint("RIGHT", frame, "RIGHT", -16, 0)
+  pc.name:SetJustifyH("LEFT")
+  pc.name:SetWordWrap(false)
+
+  pc.price = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  pc.price:SetPoint("TOPLEFT", pc.name, "BOTTOMLEFT", 0, -2)
+  pc.price:SetJustifyH("LEFT")
+
+  pc.source = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  pc.source:SetPoint("TOPLEFT", pc.price, "BOTTOMLEFT", 0, -2)
+  pc.source:SetJustifyH("LEFT")
+
+  return button
+end
+
+----------------------------------------------------------------------------------------------
+
 local function Refresh()
   if not frame or not frame:IsShown() then return end
   for _, cb in ipairs(frame.checks) do cb:SetChecked(ns.db[cb.key] and true or false) end
+
+  RefreshPriceCheck()
 
   local lines = {}
   for _, peer in pairs(ns.peers) do
@@ -45,7 +184,7 @@ end
 
 local function Build()
   frame = CreateFrame("Frame", "AuctionatorSyncFrame", UIParent, "BackdropTemplate")
-  frame:SetSize(380, 420)
+  frame:SetSize(380, 500)
   frame:SetPoint("CENTER")
   frame:SetFrameStrata("DIALOG")
   frame:SetMovable(true)
@@ -104,8 +243,10 @@ local function Build()
   frame.status:SetPoint("LEFT", sync, "RIGHT", 12, 0)
   frame.status:SetJustifyH("LEFT")
 
+  local itemButton = BuildPriceCheck(y - 50)
+
   local header = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  header:SetPoint("TOPLEFT", 16, y - 48)
+  header:SetPoint("TOPLEFT", itemButton, "BOTTOMLEFT", 0, -18)
   header:SetText("Online with AuctionatorSync")
 
   frame.peers = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")

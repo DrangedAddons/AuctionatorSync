@@ -71,6 +71,7 @@ function ns.Send(target, msg, prio)
   if not target then return end
   msg.v = ns.VERSION
   msg.p = ns.PROTOCOL
+  msg.sid = ns.SESSION
   local text = ns.Encode(msg)
   if not text then return end
   local size = target.kind == "BN" and CHUNK_BNET or CHUNK_ADDON
@@ -178,6 +179,7 @@ local function Deliver(peerKey, text, peerInfo)
   if not whole then return end
   local msg = ns.Decode(whole)
   if not msg or type(msg.t) ~= "string" then return end
+  if msg.sid == ns.SESSION or ns.IsMe(peerInfo.name) then return end -- our own message
   local peer = ns.peers[peerKey]
   if not peer then
     peer = { name = peerInfo.name }
@@ -190,8 +192,8 @@ end
 
 ns.On("CHAT_MSG_ADDON", function(prefix, text, channel, sender)
   if prefix ~= ns.PREFIX or not sender then return end
+  if ns.IsMe(sender) then return end
   local short = ns.ShortName(sender)
-  if short == ns.ShortName(ns.playerName) then return end
   local via
   if channel == "GUILD" then
     if not ns.db.guild then return end
@@ -213,7 +215,7 @@ end)
 ns.On("BN_CHAT_MSG_ADDON", function(prefix, text, _, senderID)
   if prefix ~= ns.PREFIX or not ns.db.bnet or not senderID then return end
   local name = BNetNameFor(senderID)
-  if not name then return end
+  if not name or ns.IsMe(name) then return end
   Deliver(ns.ShortName(name), text, { name = name, via = "bnet", bnID = senderID })
 end)
 

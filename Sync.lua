@@ -7,10 +7,13 @@
 -- Only changed prices travel: a rescan that finds the same price sends nothing.
 --
 -- Messages (all carry r = Auctionator's realm key, so other realms/factions are ignored):
---   HELLO {since?, after?}  "I'm here"; with since, "and I'd like what changed since then";
---                    after = my last full scan, so prices seen before it aren't worth sending
---   PONG  {n?}       answer to HELLO; n = how many prices qualify
---   REQ   {since, after?}   sent to the peer with the most to offer
+--   HELLO {since?}   "I'm here"; with since, "and I'd like what changed since then"
+--   PONG  {n?}       answer to HELLO; n = how many prices changed here since `since`
+--   REQ   {since, after?, cov?}  sent to the peer with the most to offer. If I've done a full
+--                    scan since my last catch-up: after = when it finished, cov = the items it
+--                    covered. The peer skips covered items it saw before `after` (mine are
+--                    newer); everything else that changed since `since` still comes.
+-- Every message also carries sid (a random per-login ID) so our own echoes are dropped.
 --   DATA  {x, e, b, fin?, cu?}  one batch of a transfer x: e = {key, price, available, ts - b, ...}
 --                    fin marks the last batch; cu marks a catch-up reply
 local _, ns = ...
@@ -71,6 +74,27 @@ local function ChangedAt(r, key, entry)
   return r.ch[key] or SeenAt(r, key, entry)
 end
 
+-- Auctionator keys: "12345" (item), "g:12345:..." (gear by item level), "p:..." (battle pet).
+function ns.ItemIDFromKey(key)
+  key = tostring(key)
+  return tonumber(key:match("^(%d+)$") or key:match("^g:(%d+)"))
+end
+
+-- The latest price change (shown as the "price check" item in /async). Only real items, so
+-- it can be shown with an icon and tooltip. from = friend's name, nil for your own scan.
+local function NoteChange(r, key, price, was, from)
+  if not ns.ItemIDFromKey(key) then return end
+  local c = r.lastChange or {}
+  c.key, c.price, c.was, c.from, c.at = key, price, was, from, ns.Now()
+  r.lastChange = c
+end
+
+function ns.LastChange()
+  local key = ns.RealmKey()
+  local r = key and ns.store and ns.store.realms[key]
+  return r and r.lastChange
+end
+
 ----------------------------------------------------------------------------------------------
 -- Watching Auctionator's own scans
 
@@ -107,6 +131,7 @@ local function OnLocalPrice(key, price, available)
   key = tostring(key)
   local now = ns.Now()
   r.ts[key] = now
+  if ns.NoteScanKey then ns.NoteScanKey(key) end
   if known[key] == price then return end -- same price as before: seen again, nothing to send
   local p = pending[key]
   if p then
@@ -114,6 +139,7 @@ local function OnLocalPrice(key, price, available)
   else
     pending[key] = { price, available or 0, known[key] }
   end
+  NoteChange(r, key, price, known[key], nil)
   known[key] = price
   r.ch[key] = now
 end
@@ -163,6 +189,7 @@ local function Apply(r, key, price, available, ts)
   end
   r.ts[key] = ts
   if entry.m == price then return "same" end
+  local was = entry.m
   entry.m = price
   entry.l = entry.l or {}
   entry.h = entry.h or {}
@@ -186,7 +213,7 @@ local function Apply(r, key, price, available, ts)
       entry.a[d] = math.max(entry.a[d] or 0, available)
     end
   end
-  return "changed"
+  return "changed", was
 end
 
 ----------------------------------------------------------------------------------------------
@@ -227,18 +254,19 @@ function ns.SendEntries(targets, list, prio, opts)
   end
 end
 
--- Prices that changed here after `since`, seen within maxAgeDays and after `after` (the
--- asker's last full scan: anything older than that, their own scan already beat).
-local function Collect(since, after)
+-- Prices that changed here after `since` and were seen within maxAgeDays. `covered` (a set of
+-- keys) and `after`: the asker's last full scan saw those items at `after`, so our sightings of
+-- them from before then are older than theirs and not worth sending.
+local function Collect(since, covered, after)
   local r, db = Realm(), DB()
   local list = {}
   if not r or not db or type(db.db) ~= "table" then return list end
   since = since or 0
-  local oldest = math.max(ns.Now() - ns.db.maxAgeDays * 86400, after or 0)
+  local oldest = ns.Now() - ns.db.maxAgeDays * 86400
   for key, entry in pairs(db.db) do
     if type(entry) == "table" and (entry.m or 0) > 0 and ChangedAt(r, key, entry) > since then
       local ts = SeenAt(r, key, entry)
-      if ts > oldest then
+      if ts > oldest and not (covered and after and covered[key] and ts <= after) then
         local day = entry.a and tostring(floor((ts - DayZero()) / 86400))
         list[#list + 1] = { key, entry.m, day and entry.a[day] or 0, ts }
       end
@@ -315,29 +343,61 @@ end
 
 ----------------------------------------------------------------------------------------------
 -- Auctionator's full scans. Auctionator announces scan start/finish on its EventBus; we
--- register a listener there (no change to Auctionator). While a scan runs, a catch-up waits;
--- right after one, our prices are the newest, so there's nothing to catch up.
+-- register a listener there (no change to Auctionator). While a scan runs, a catch-up waits,
+-- then asks only for what the scan didn't already cover (see REQ.cov).
 
 local SCAN_TIMEOUT = 900  -- forget a scan that never reported back after 15 minutes
 local scanning, scanTimer = false, nil
+local scanKeys            -- set of keys the running scan has priced
 local deferred -- nil, or the `verbose` of a catch-up waiting for the scan to finish
+
+-- Covered keys go over the wire compactly: item IDs sorted and sent as gaps, the rest as-is.
+local function PackKeys(list)
+  local ids, other = {}, {}
+  for _, key in ipairs(list) do
+    local id = tostring(key):match("^(%d+)$")
+    if id then ids[#ids + 1] = tonumber(id) else other[#other + 1] = key end
+  end
+  table.sort(ids)
+  local gaps, prev = {}, 0
+  for i, id in ipairs(ids) do
+    gaps[i] = id - prev
+    prev = id
+  end
+  return { d = gaps, s = other }
+end
+
+local function UnpackKeys(packed)
+  if type(packed) ~= "table" then return nil end
+  local set, id = {}, 0
+  for _, gap in ipairs(type(packed.d) == "table" and packed.d or {}) do
+    id = id + (tonumber(gap) or 0)
+    set[tostring(id)] = true
+  end
+  for _, key in ipairs(type(packed.s) == "table" and packed.s or {}) do set[tostring(key)] = true end
+  return set
+end
 
 local function ScanEnded(completed)
   scanning = false
   if scanTimer then scanTimer:Cancel(); scanTimer = nil end
   local r = Realm()
-  if completed and r then
+  if completed and r and scanKeys then
     r.lastFullScan = ns.Now()
-    if deferred ~= nil then
-      Say(deferred, "Your scan is the newest, so there's nothing to catch up.")
-      r.lastCatchUp = r.lastFullScan
-    end
-    deferred = nil
-  elseif deferred ~= nil then
+    local list = {}
+    for key in pairs(scanKeys) do list[#list + 1] = key end
+    r.scanKeys = list
+  end
+  scanKeys = nil
+  if deferred ~= nil then
     local verbose = deferred
     deferred = nil
     ns.CatchUp(verbose)
   end
+end
+
+function ns.NoteScanKey(key)
+  if scanKeys then scanKeys[key] = true end
 end
 
 local scanListener = { kinds = {} }
@@ -345,6 +405,7 @@ function scanListener:ReceiveEvent(event)
   local kind = self.kinds[event]
   if kind == "start" then
     scanning = true
+    scanKeys = {}
     if scanTimer then scanTimer:Cancel() end
     scanTimer = C_Timer.NewTimer(SCAN_TIMEOUT, function() ScanEnded(false) end)
     -- a catch-up still asking around is pointless now: the scan will be newer
@@ -410,7 +471,7 @@ function ns.CatchUp(verbose)
     return
   end
   for _, t in ipairs(targets) do
-    ns.Send(t, { t = "HELLO", r = ns.RealmKey(), since = since, after = r.lastFullScan }, "ALERT")
+    ns.Send(t, { t = "HELLO", r = ns.RealmKey(), since = since }, "ALERT")
   end
   if verbose then ns.Print("Checking for changed prices...") end
   local mine = catchUp
@@ -436,11 +497,19 @@ function ns.CatchUp(verbose)
     end
     mine.chosen = bestKey
     local peer = ns.peers[bestKey]
-    -- Only worth a line of its own when it'll take a while (more than one batch).
-    if verbose or bestN > BATCH then
+    local req = { t = "REQ", r = ns.RealmKey(), since = mine.since }
+    local covered = r.lastFullScan and r.lastFullScan > mine.since and r.scanKeys
+    if covered then
+      req.after, req.cov = r.lastFullScan, PackKeys(r.scanKeys)
+    end
+    -- Only worth a line of its own when it'll take a while (more than one batch). After a scan
+    -- the friend's count doesn't know what the scan covered, so it's too high to quote.
+    if covered then
+      if verbose then ns.Print("Getting what your scan didn't cover from %s...", peer.name) end
+    elseif verbose or bestN > BATCH then
       Say(verbose, "Catching up %s from %s...", ns.Plural(bestN, "price"), peer.name)
     end
-    ns.Send(ns.ReplyTarget(peer), { t = "REQ", r = ns.RealmKey(), since = mine.since, after = r.lastFullScan }, "ALERT")
+    ns.Send(ns.ReplyTarget(peer), req, "ALERT")
   end)
 end
 
@@ -464,7 +533,7 @@ function ns.OnMessage(msg, peer)
 
   if msg.t == "HELLO" then
     local reply = { t = "PONG", r = ns.RealmKey() }
-    if msg.since then reply.n = #Collect(tonumber(msg.since) or 0, tonumber(msg.after)) end
+    if msg.since then reply.n = #Collect(tonumber(msg.since) or 0) end
     ns.Send(ns.ReplyTarget(peer), reply, "ALERT")
 
   elseif msg.t == "PONG" then
@@ -473,7 +542,7 @@ function ns.OnMessage(msg, peer)
   elseif msg.t == "REQ" then
     if serving[peerKey] then return end
     serving[peerKey] = true
-    local list = Collect(tonumber(msg.since) or 0, tonumber(msg.after))
+    local list = Collect(tonumber(msg.since) or 0, UnpackKeys(msg.cov), tonumber(msg.after))
     ns.SendEntries({ ns.ReplyTarget(peer) }, list, "BULK", { cu = true })
     ns.Debug("sending %d changed prices to %s", #list, peer.name)
     C_Timer.After(120, function() serving[peerKey] = nil end)
@@ -493,9 +562,10 @@ function ns.OnMessage(msg, peer)
     for i = 1, #e - 3, 4 do
       tr.received = tr.received + 1
       local key = e[i]
-      local result = Apply(r, key, e[i + 1], e[i + 2], base + (tonumber(e[i + 3]) or 0))
+      local result, was = Apply(r, key, e[i + 1], e[i + 2], base + (tonumber(e[i + 3]) or 0))
       if result == "changed" then
         tr.changed = tr.changed + 1
+        NoteChange(r, tostring(key), tonumber(e[i + 1]), was, peer.name)
       elseif result == "older" and msg.cu and entries then
         -- only for catch-up replies: a guild broadcast would get a correction from everyone
         key = tostring(key)
