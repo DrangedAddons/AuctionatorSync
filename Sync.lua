@@ -15,7 +15,9 @@
 local _, ns = ...
 
 local BATCH = 1500          -- prices per DATA message
-local SHARE_DELAY = 10      -- seconds of quiet after a scan before sending it
+-- Changes are collected and sent as one update every SHARE_INTERVAL seconds.
+-- 60 while testing; set back to 300 (5 minutes) for the live release.
+local SHARE_INTERVAL = 60
 local PONG_WAIT = 5         -- seconds to collect answers to a catch-up HELLO
 local CATCHUP_MARGIN = 600  -- re-ask a little before the last catch-up, for clock drift
 local ANNOUNCE_FALLBACK = 60 -- print a transfer's summary anyway if its last batch never arrives
@@ -74,18 +76,23 @@ end
 -- What each item's price was before the current scan touched it. The hook runs after
 -- Auctionator's SetPrice has already overwritten m, so we keep our own copy (memory only).
 local known = {}
-local pending, shareTimer = {}, nil
+-- pending[key] = { price, available, before }: the newest price since the last update, and
+-- what the price was at that last update (if it has gone back to that, there's nothing to send).
+local pending = {}
 local hookedDB
 
-local function FlushShared()
-  shareTimer = nil
+-- Runs every SHARE_INTERVAL. Prices that changed while no one was online aren't lost: their
+-- change time is saved, so friends get them in their next catch-up.
+function ns.FlushShared()
   local r = Realm()
-  if not r or not ns.db.shareScans then wipe(pending); return end
+  if not r or not ns.db.shareScans or not next(pending) then wipe(pending); return end
   local targets = ns.PeerTargets()
   if #targets == 0 then wipe(pending); return end
   local list = {}
   for key, info in pairs(pending) do
-    list[#list + 1] = { key, info[1], info[2], r.ts[key] or ns.Now() }
+    if info[1] ~= info[3] then
+      list[#list + 1] = { key, info[1], info[2], r.ts[key] or ns.Now() }
+    end
   end
   wipe(pending)
   if #list == 0 then return end
@@ -100,11 +107,14 @@ local function OnLocalPrice(key, price, available)
   local now = ns.Now()
   r.ts[key] = now
   if known[key] == price then return end -- same price as before: seen again, nothing to send
+  local p = pending[key]
+  if p then
+    p[1], p[2] = price, available or 0
+  else
+    pending[key] = { price, available or 0, known[key] }
+  end
   known[key] = price
   r.ch[key] = now
-  pending[key] = { price, available or 0 }
-  if shareTimer then shareTimer:Cancel() end
-  shareTimer = C_Timer.NewTimer(SHARE_DELAY, FlushShared)
 end
 
 -- Auctionator can rebuild its database object (e.g. when you clear it), so keep checking.
@@ -127,8 +137,8 @@ end
 ----------------------------------------------------------------------------------------------
 -- Writing friends' prices into Auctionator
 
--- Returns "changed" (newer and a different price), "same" (newer, same price: only the
--- timestamp moves), "older" (mine is newer AND different) or nil.
+-- Returns "changed" (newer and a different price: written), "same" (newer, same price: only
+-- our timestamp moves), "older" (mine is newer AND different: kept) or nil.
 -- History uses the same per-day rules as Auctionator's SetPrice, on the day the price was seen.
 local function Apply(r, key, price, available, ts)
   local db = DB()
@@ -143,25 +153,21 @@ local function Apply(r, key, price, available, ts)
   if entry ~= nil and type(entry) ~= "table" then return nil end
   if not entry then
     entry = { l = {}, h = {}, a = {}, m = 0 }
-    data[key] = entry
   end
+
+  -- Only a newer AND different price is written into Auctionator. A newer sighting of the
+  -- same price just moves our timestamp; an older one is never written.
+  if ts <= SeenAt(r, key, entry) then
+    return ((entry.m or 0) > 0 and entry.m ~= price) and "older" or nil
+  end
+  r.ts[key] = ts
+  if entry.m == price then return "same" end
+  entry.m = price
   entry.l = entry.l or {}
   entry.h = entry.h or {}
-
-  local result
-  if ts > SeenAt(r, key, entry) then
-    r.ts[key] = ts
-    if entry.m ~= price then
-      entry.m = price
-      known[key] = price
-      r.ch[key] = ns.Now()
-      result = "changed"
-    else
-      result = "same"
-    end
-  elseif (entry.m or 0) > 0 and entry.m ~= price then
-    result = "older"
-  end
+  data[key] = entry
+  known[key] = price
+  r.ch[key] = ns.Now()
 
   local day = floor((ts - DayZero()) / 86400)
   if not db.cutoffDay or day > db.cutoffDay then
@@ -179,7 +185,7 @@ local function Apply(r, key, price, available, ts)
       entry.a[d] = math.max(entry.a[d] or 0, available)
     end
   end
-  return result
+  return "changed"
 end
 
 ----------------------------------------------------------------------------------------------
@@ -244,16 +250,18 @@ end
 
 local catchUp -- { started, since, offers = { [peerKey] = n }, chosen, verbose }
 
--- One chat line per transfer, when its last batch lands (not one per batch).
-local transfers = {} -- peerKey .. "/" .. x -> { name, changed, corrections = {}, timer }
+-- A transfer arrives in batches of BATCH prices; each batch is applied as it lands, but chat
+-- only hears about it once, after the last batch, with the totals for the whole transfer.
+local transfers = {} -- peerKey .. "/" .. x -> { name, changed, received, corrections = {}, timer }
 
-local function FinishTransfer(tkey, peer)
+local function FinishTransfer(tkey, peer, incomplete)
   local tr = transfers[tkey]
   if not tr then return end
   transfers[tkey] = nil
   if tr.timer then tr.timer:Cancel() end
   if ns.db.announce and tr.changed > 0 then
-    ns.Print("%d changed price%s from %s.", tr.changed, tr.changed == 1 and "" or "s", tr.name)
+    ns.Print("Synced %d changed price%s from %s (%d checked)%s.", tr.changed, tr.changed == 1 and "" or "s",
+      tr.name, tr.received, incomplete and ", transfer cut short" or "")
   elseif tr.verbose then
     ns.Print("Nothing new from %s - your prices match.", tr.name)
   end
@@ -265,6 +273,7 @@ local function FinishTransfer(tkey, peer)
 end
 
 function ns.CatchUp(verbose)
+  if verbose then ns.FlushShared() end -- Sync now also sends what's collected so far
   local r = Realm()
   if not r then
     if verbose then ns.Print("Auctionator's price database isn't ready yet.") end
@@ -342,12 +351,13 @@ function ns.OnMessage(msg, peer)
     local tkey = peerKey .. "/" .. tostring(msg.x)
     local tr = transfers[tkey]
     if not tr then
-      tr = { name = peer.name, changed = 0, corrections = {},
+      tr = { name = peer.name, changed = 0, received = 0, corrections = {},
         verbose = msg.cu and catchUp and catchUp.chosen == peerKey and catchUp.verbose }
       transfers[tkey] = tr
     end
     local entries = DB() and DB().db
     for i = 1, #e - 3, 4 do
+      tr.received = tr.received + 1
       local key = e[i]
       local result = Apply(r, key, e[i + 1], e[i + 2], base + (tonumber(e[i + 3]) or 0))
       if result == "changed" then
@@ -367,7 +377,7 @@ function ns.OnMessage(msg, peer)
         catchUp = nil
       end
     else
-      tr.timer = C_Timer.NewTimer(ANNOUNCE_FALLBACK, function() FinishTransfer(tkey, peer) end)
+      tr.timer = C_Timer.NewTimer(ANNOUNCE_FALLBACK, function() FinishTransfer(tkey, peer, true) end)
     end
   end
 end
@@ -394,6 +404,7 @@ ns.On("PLAYER_LOGIN", function()
   PruneTimestamps()
   ns.HookAuctionator()
   C_Timer.NewTicker(10, ns.HookAuctionator)
+  C_Timer.NewTicker(SHARE_INTERVAL, ns.FlushShared)
   -- Give the guild roster and friends list a moment to arrive.
   C_Timer.After(10, function()
     ns.HookAuctionator()

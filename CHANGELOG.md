@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0
+- **Changes go out on a timer.** Your scans' changed prices are collected and sent as one update every minute (every 5 minutes once we go live), not straight after each scan. An item that changes several times in that window is sent once, with its newest price; one that goes back to the price it had at the last update isn't sent at all. **Sync now** sends what's collected straight away.
+- **Only different prices are written.** A friend's price only goes into your Auctionator data when it's newer *and* different from yours. A newer sighting of the same price just updates AuctionatorSync's own timestamp, and an older price is never written.
+- **One chat line per sync, with the total:** "Synced 4213 changed prices from Bob (6000 checked)." Big syncs still travel in batches of 1500, but you only hear about it once the last batch is in.
+
 ## 0.2.0
 - **Only changed prices are sent.** AuctionatorSync now remembers each item's price before a scan, so a rescan that finds the same price sends nothing. Catch-ups only carry prices that changed since your last catch-up, not every price seen since then.
 - A newer sighting of the same price still updates the item's timestamp (so the freshest sighting keeps winning), but it isn't counted or announced.
