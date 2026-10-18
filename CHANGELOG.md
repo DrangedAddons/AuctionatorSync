@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.2
+- New icon: a bronze gavel on its sound block with a blue sync badge (two circling arrows) in the corner, replacing the goblin auctioneer. Original artwork, in the spirit of Auctionator's gavel.
+
 ## 0.7.1
 - New icon: a goblin auctioneer behind his podium, gavel raised. Shown in the game's AddOns list and in the DrangedAddons manager.
 
