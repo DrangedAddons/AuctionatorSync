@@ -81,11 +81,12 @@ function ns.ItemIDFromKey(key)
 end
 
 -- The latest price change (shown as the "price check" item in /async). Only real items, so
--- it can be shown with an icon and tooltip. from = friend's name, nil for your own scan.
-local function NoteChange(r, key, price, was, from)
+-- it can be shown with an icon and tooltip. synced = true when it came in through a sync,
+-- nil for your own scan (no names: it just came from AuctionatorSync).
+local function NoteChange(r, key, price, was, synced)
   if not ns.ItemIDFromKey(key) then return end
   local c = r.lastChange or {}
-  c.key, c.price, c.was, c.from, c.at = key, price, was, from, ns.Now()
+  c.key, c.price, c.was, c.from, c.at = key, price, was, synced or nil, ns.Now()
   r.lastChange = c
 end
 
@@ -284,24 +285,19 @@ end
 -- few seconds share one line.
 
 local REPORT_DELAY = 10
-local report, reportTimer = {}, nil -- name -> changed prices, for the combined line
+local reported, reportTimer = 0, nil -- changed prices waiting for the combined line
 
+-- Chat never names who prices came from: they come from AuctionatorSync (the line's prefix).
 local function FlushReport()
   reportTimer = nil
-  local names, total = {}, 0
-  for name, n in pairs(report) do
-    names[#names + 1] = name
-    total = total + n
-  end
-  wipe(report)
-  if total == 0 then return end
-  table.sort(names)
-  ns.Notice("Updated %s from %s.", ns.Plural(total, "price"), ns.NameList(names))
+  local total = reported
+  reported = 0
+  if total > 0 then ns.Notice("Updated %s.", ns.Plural(total, "price")) end
 end
 
-local function Report(name, changed)
+local function Report(changed)
   if changed <= 0 then return end
-  report[name] = (report[name] or 0) + changed
+  reported = reported + changed
   if not reportTimer then reportTimer = C_Timer.NewTimer(REPORT_DELAY, FlushReport) end
 end
 
@@ -327,12 +323,12 @@ local function FinishTransfer(tkey, peer, incomplete)
   local cut = incomplete and " (stopped partway; the rest comes with the next sync)" or ""
   if tr.kind == "catchup" then
     if tr.changed > 0 then
-      Say(tr.verbose, "Caught up: updated %s from %s%s.", ns.Plural(tr.changed, "price"), tr.name, cut)
+      Say(tr.verbose, "Caught up: updated %s%s.", ns.Plural(tr.changed, "price"), cut)
     else
-      Say(tr.verbose, "Up to date: your prices already match %s's%s.", tr.name, cut)
+      Say(tr.verbose, "Up to date%s.", cut)
     end
   else
-    Report(tr.name, tr.changed)
+    Report(tr.changed)
   end
   -- They sent prices that are older than ours and different: send ours back so they're fixed too.
   if peer and #tr.corrections > 0 then
@@ -454,8 +450,7 @@ function ns.CatchUp(verbose)
     return
   end
   if catchUp and catchUp.chosen then
-    local peer = ns.peers[catchUp.chosen]
-    Say(verbose, "Already catching up from %s.", peer and peer.name or "a friend")
+    Say(verbose, "Already catching up.")
     return
   end
   local since = math.max(0, (r.lastCatchUp or 0) - CATCHUP_MARGIN)
@@ -489,8 +484,7 @@ function ns.CatchUp(verbose)
       return
     end
     if not bestKey then
-      table.sort(names)
-      Say(verbose, "Up to date with %s.", ns.NameList(names))
+      Say(verbose, "Up to date.")
       r.lastCatchUp = mine.started
       catchUp = nil
       return
@@ -505,9 +499,9 @@ function ns.CatchUp(verbose)
     -- Only worth a line of its own when it'll take a while (more than one batch). After a scan
     -- the friend's count doesn't know what the scan covered, so it's too high to quote.
     if covered then
-      if verbose then ns.Print("Getting what your scan didn't cover from %s...", peer.name) end
+      if verbose then ns.Print("Getting what your scan didn't cover...") end
     elseif verbose or bestN > BATCH then
-      Say(verbose, "Catching up %s from %s...", ns.Plural(bestN, "price"), peer.name)
+      Say(verbose, "Catching up %s...", ns.Plural(bestN, "price"))
     end
     ns.Send(ns.ReplyTarget(peer), req, "ALERT")
   end)
@@ -565,7 +559,7 @@ function ns.OnMessage(msg, peer)
       local result, was = Apply(r, key, e[i + 1], e[i + 2], base + (tonumber(e[i + 3]) or 0))
       if result == "changed" then
         tr.changed = tr.changed + 1
-        NoteChange(r, tostring(key), tonumber(e[i + 1]), was, peer.name)
+        NoteChange(r, tostring(key), tonumber(e[i + 1]), was, true)
       elseif result == "older" and msg.cu and entries then
         -- only for catch-up replies: a guild broadcast would get a correction from everyone
         key = tostring(key)

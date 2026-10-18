@@ -90,7 +90,7 @@ local function RefreshPriceCheck()
     text = text .. "  |cff999999was " .. Money(c.was) .. "|r"
   end
   pc.price:SetText(text)
-  pc.source:SetText(string.format("|cff999999%s · %s|r", c.from and ("From " .. c.from) or "From your scan", Ago(c.at)))
+  pc.source:SetText(string.format("|cff999999%s · %s|r", c.from and "From AuctionatorSync" or "From your scan", Ago(c.at)))
 end
 
 local function BuildPriceCheck(y)

@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.6.1
+- Messages no longer name who prices came from. Chat says "Updated 37 prices.", "Caught up: updated 812 prices." and "Up to date.", and the price check says "From AuctionatorSync" (or "From your scan").
+
 ## 0.6.0
 - **Price check in `/async`:** the latest item whose price changed, as an item button with its icon, name, new price (and what it was), and whether it came from your scan or a friend, and when. Hover for the full tooltip, including Auctionator's price lines; Shift-click to link it in chat. If a friend's price for the same item matches, you're in sync.
 - **You no longer sync with yourself.** Your own messages could come back to you and be taken for a friend's (you'd see "Catching up ... from <your own name>"). Every message now carries a random per-login ID, and anything carrying your own ID or name is ignored.
