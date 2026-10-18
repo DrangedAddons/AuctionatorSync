@@ -13,12 +13,13 @@ local guildSet, friendSet = {}, {}
 ----------------------------------------------------------------------------------------------
 -- Who we trust: guild members, friends-list friends, Battle.net friends on this realm.
 
+-- guildSet[short] = true while that member is online, false while offline
 function ns.RefreshRosters()
   wipe(guildSet)
   if IsInGuild() and GetNumGuildMembers then
     for i = 1, GetNumGuildMembers() do
-      local name = GetGuildRosterInfo(i)
-      if name then guildSet[ns.ShortName(name)] = true end
+      local name, _, _, _, _, _, _, _, online = GetGuildRosterInfo(i)
+      if name then guildSet[ns.ShortName(name)] = online and true or false end
     end
   end
   wipe(friendSet)
@@ -30,8 +31,22 @@ function ns.RefreshRosters()
   end
 end
 
-function ns.IsGuildMember(name) return guildSet[ns.ShortName(name)] == true end
+function ns.IsGuildMember(name) return guildSet[ns.ShortName(name)] ~= nil end
 function ns.IsFriend(name) return friendSet[ns.ShortName(name)] ~= nil end
+
+-- Is a peer we've heard from this session still online?
+function ns.IsPeerOnline(peer)
+  local short = ns.ShortName(peer.name)
+  if guildSet[short] then return true end
+  local f = friendSet[short]
+  if f and f.connected then return true end
+  if peer.via == "bnet" then
+    for _, b in ipairs(ns.BNetFriendsHere()) do
+      if ns.ShortName(b.name) == short then return true end
+    end
+  end
+  return false
+end
 
 -- Online Battle.net friends in this game, on this realm: { {id, name}, ... }
 function ns.BNetFriendsHere()

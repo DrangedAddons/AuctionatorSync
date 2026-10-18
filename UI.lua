@@ -30,7 +30,6 @@ local function Money(copper)
   return tostring(copper) .. "c"
 end
 
-local VIA = { guild = "Guild", friend = "Friend", bnet = "Battle.net" }
 
 ----------------------------------------------------------------------------------------------
 -- Price check: the latest changed price, as an item button. Friends compare it to check
@@ -158,23 +157,85 @@ local function BuildPriceCheck(y)
 end
 
 ----------------------------------------------------------------------------------------------
+-- Online list: everyone online with AuctionatorSync (you included), grouped by version.
+-- Collapsed it's one line of counts; click the header to see the names.
+
+-- "0.10.2" > "0.9.0": compare number by number
+local function NewerVersion(a, b)
+  local pa, pb = {}, {}
+  for n in tostring(a):gmatch("%d+") do pa[#pa + 1] = tonumber(n) end
+  for n in tostring(b):gmatch("%d+") do pb[#pb + 1] = tonumber(n) end
+  for i = 1, math.max(#pa, #pb) do
+    local x, y = pa[i] or 0, pb[i] or 0
+    if x ~= y then return x > y end
+  end
+  return false
+end
+
+-- versions (newest first), groups[version] = sorted names ("You" first), total count
+function ns.OnlineGroups()
+  local groups, versions, count = {}, {}, 1
+  local function Add(version, name)
+    version = tostring(version or "?")
+    if not groups[version] then
+      groups[version] = {}
+      versions[#versions + 1] = version
+    end
+    table.insert(groups[version], name)
+  end
+  Add(ns.VERSION, "You")
+  for _, peer in pairs(ns.peers) do
+    if not peer.otherRealm and ns.IsPeerOnline(peer) then
+      Add(peer.version, peer.name)
+      count = count + 1
+    end
+  end
+  table.sort(versions, NewerVersion)
+  for _, names in pairs(groups) do
+    table.sort(names, function(a, b)
+      if a == "You" or b == "You" then return a == "You" end
+      return a < b
+    end)
+  end
+  return versions, groups, count
+end
+
+local function RefreshOnline()
+  local versions, groups, count = ns.OnlineGroups()
+  local newest = versions[1]
+
+  local expanded = ns.db.onlineExpanded
+  frame.onlineHeader.text:SetText(string.format("%s Online with AuctionatorSync (%d)",
+    expanded and "|cffffd100-|r" or "|cffffd100+|r", count))
+
+  local parts = {}
+  for _, v in ipairs(versions) do
+    local colour = (v == newest) and "|cff33ff99" or "|cffff9966"
+    local names = groups[v]
+    if expanded then
+      parts[#parts + 1] = string.format("%sv%s|r |cff999999(%d%s)|r  %s", colour, v, #names,
+        v == newest and "" or ", older", table.concat(names, ", "))
+    else
+      parts[#parts + 1] = string.format("%sv%s|r ×%d", colour, v, #names)
+    end
+  end
+  frame.peers:SetText(table.concat(parts, expanded and "\n" or "   "))
+
+  -- grow or shrink the window to fit the list
+  local top, listTop = frame:GetTop(), frame.peers:GetTop()
+  if top and listTop then
+    frame:SetHeight(top - listTop + frame.peers:GetStringHeight() + 16)
+  end
+end
+
+----------------------------------------------------------------------------------------------
 
 local function Refresh()
   if not frame or not frame:IsShown() then return end
   for _, cb in ipairs(frame.checks) do cb:SetChecked(ns.db[cb.key] and true or false) end
 
   RefreshPriceCheck()
-
-  local lines = {}
-  for _, peer in pairs(ns.peers) do
-    local line = string.format("%s  |cff999999%s · v%s · %s|r", peer.name, VIA[peer.via] or peer.via,
-      tostring(peer.version), Ago(peer.lastSeen))
-    if peer.otherRealm then line = line .. "  |cffff9966(other realm/faction)|r" end
-    lines[#lines + 1] = line
-  end
-  table.sort(lines)
-  frame.peers:SetText(#lines > 0 and table.concat(lines, "\n")
-    or "|cff999999No one else with AuctionatorSync seen yet.|r")
+  RefreshOnline()
 
   local realm = ns.store.realms[ns.RealmKey() or ""]
   local last = realm and realm.lastCatchUp or 0
@@ -245,9 +306,23 @@ local function Build()
 
   local itemButton = BuildPriceCheck(y - 50)
 
-  local header = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  local header = CreateFrame("Button", nil, frame)
   header:SetPoint("TOPLEFT", itemButton, "BOTTOMLEFT", 0, -18)
-  header:SetText("Online with AuctionatorSync")
+  header:SetSize(260, 16)
+  header.text = header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  header.text:SetPoint("LEFT")
+  header:SetScript("OnClick", function()
+    ns.db.onlineExpanded = not ns.db.onlineExpanded
+    Refresh()
+  end)
+  header:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:SetText(ns.db.onlineExpanded and "Click to hide names" or "Click to show names")
+    GameTooltip:AddLine("Orange versions are older than the newest one online.", 1, 1, 1, true)
+    GameTooltip:Show()
+  end)
+  header:SetScript("OnLeave", GameTooltip_Hide)
+  frame.onlineHeader = header
 
   frame.peers = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
   frame.peers:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -6)
@@ -258,6 +333,7 @@ local function Build()
 
   frame:SetScript("OnShow", Refresh)
   C_Timer.NewTicker(5, Refresh)
+  frame:Hide() -- a new frame starts shown; start hidden so the first /async opens it
 end
 
 function ns.ToggleWindow()

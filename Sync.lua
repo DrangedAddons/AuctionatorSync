@@ -646,8 +646,6 @@ ns.On("PLAYER_ENTERING_WORLD", function()
   end)
 end)
 
-local VIA = { guild = "guild", friend = "friend", bnet = "Battle.net" }
-
 function ns.PrintStatus()
   local r = Realm()
   ns.Print("v%s on %s.", ns.VERSION, tostring(ns.RealmKey() or "?"))
@@ -657,15 +655,14 @@ function ns.PrintStatus()
     ns.Print("Tracking %s. Last catch-up: %s.", ns.Plural(count, "price"),
       (r.lastCatchUp or 0) > 0 and date("%d %b %H:%M", r.lastCatchUp) or "never")
   end
-  local list = {}
-  for _, peer in pairs(ns.peers) do
-    list[#list + 1] = string.format("%s (%s%s)", peer.name, VIA[peer.via] or peer.via,
-      peer.otherRealm and ", other realm/faction" or "")
+  local versions, groups, count = ns.OnlineGroups()
+  if count == 1 then
+    ns.Print("No one else online with AuctionatorSync.")
+    return
   end
-  table.sort(list)
-  if #list > 0 then
-    ns.Print("Seen this session: %s.", table.concat(list, ", "))
-  else
-    ns.Print("No one else with AuctionatorSync seen this session.")
+  local parts = {}
+  for _, v in ipairs(versions) do
+    parts[#parts + 1] = string.format("v%s: %s", v, table.concat(groups[v], ", "))
   end
+  ns.Print("Online (%d): %s.", count, table.concat(parts, " · "))
 end

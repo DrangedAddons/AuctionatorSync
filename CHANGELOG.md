@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0
+- **Online list grouped by version.** The `/async` window shows everyone online with AuctionatorSync, you included, as one compact line of counts per version ("v0.7.0 ×3   v0.6.1 ×1"). Click the header to expand it into names per version, and click again to collapse; the window remembers which you chose. The newest version is green and older ones are orange, so you can see who needs to update. Only people who are actually online are listed, and the window resizes to fit.
+- `/async status` lists who's online the same way, grouped by version.
+- Fixed: the first `/async` after logging in did nothing, and you had to type it twice.
+
 ## 0.6.1
 - Messages no longer name who prices came from. Chat says "Updated 37 prices.", "Caught up: updated 812 prices." and "Up to date.", and the price check says "From AuctionatorSync" (or "From your scan").
 
