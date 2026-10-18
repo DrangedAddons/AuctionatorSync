@@ -1,20 +1,24 @@
 -- The sync itself.
 --
 -- Auctionator keeps, per item, the last seen price (m) and per-day history (h/l/a), but not
--- *when* during the day a price was seen. AuctionatorSync keeps its own timestamp per item,
--- so between two friends the newer observation always wins.
+-- *when* during the day a price was seen. AuctionatorSync keeps two timestamps per item:
+--   ts[key] = when this price was last seen (by me or a friend) - the newer one wins
+--   ch[key] = when the price last CHANGED in my database - decides what gets sent
+-- Only changed prices travel: a rescan that finds the same price sends nothing.
 --
 -- Messages (all carry r = Auctionator's realm key, so other realms/factions are ignored):
---   HELLO {since?}   "I'm here"; with since, "and I'd like what I missed since then"
---   PONG  {n?}       answer to HELLO; n = how many prices I have newer than since
+--   HELLO {since?}   "I'm here"; with since, "and I'd like what changed since then"
+--   PONG  {n?}       answer to HELLO; n = how many prices changed here since `since`
 --   REQ   {since}    sent to the peer with the most to offer
---   DATA  {e, b, fin?} prices: e = {key, price, available, ts - b, ...}
+--   DATA  {x, e, b, fin?, cu?}  one batch of a transfer x: e = {key, price, available, ts - b, ...}
+--                    fin marks the last batch; cu marks a catch-up reply
 local _, ns = ...
 
 local BATCH = 1500          -- prices per DATA message
 local SHARE_DELAY = 10      -- seconds of quiet after a scan before sending it
 local PONG_WAIT = 5         -- seconds to collect answers to a catch-up HELLO
 local CATCHUP_MARGIN = 600  -- re-ask a little before the last catch-up, for clock drift
+local ANNOUNCE_FALLBACK = 60 -- print a transfer's summary anyway if its last batch never arrives
 local TS_KEEP_DAYS = 60
 
 local floor = math.floor
@@ -35,9 +39,10 @@ local function Realm()
   if not key then return nil end
   local r = ns.store.realms[key]
   if not r then
-    r = { ts = {}, lastCatchUp = 0 }
+    r = { ts = {}, ch = {}, lastCatchUp = 0 }
     ns.store.realms[key] = r
   end
+  r.ch = r.ch or {}
   return r
 end
 
@@ -59,9 +64,16 @@ local function SeenAt(r, key, entry)
   return newest and (DayZero() + newest * 86400) or 0
 end
 
+local function ChangedAt(r, key, entry)
+  return r.ch[key] or SeenAt(r, key, entry)
+end
+
 ----------------------------------------------------------------------------------------------
 -- Watching Auctionator's own scans
 
+-- What each item's price was before the current scan touched it. The hook runs after
+-- Auctionator's SetPrice has already overwritten m, so we keep our own copy (memory only).
+local known = {}
 local pending, shareTimer = {}, nil
 local hookedDB
 
@@ -76,15 +88,20 @@ local function FlushShared()
     list[#list + 1] = { key, info[1], info[2], r.ts[key] or ns.Now() }
   end
   wipe(pending)
+  if #list == 0 then return end
   ns.SendEntries(targets, list, "NORMAL")
-  ns.Debug("shared %d new prices", #list)
+  ns.Debug("shared %d changed prices", #list)
 end
 
 local function OnLocalPrice(key, price, available)
   local r = Realm()
   if not r or not key or not price then return end
   key = tostring(key)
-  r.ts[key] = ns.Now()
+  local now = ns.Now()
+  r.ts[key] = now
+  if known[key] == price then return end -- same price as before: seen again, nothing to send
+  known[key] = price
+  r.ch[key] = now
   pending[key] = { price, available or 0 }
   if shareTimer then shareTimer:Cancel() end
   shareTimer = C_Timer.NewTimer(SHARE_DELAY, FlushShared)
@@ -95,6 +112,12 @@ function ns.HookAuctionator()
   local db = DB()
   if not db or db == hookedDB or type(db.SetPrice) ~= "function" then return end
   hookedDB = db
+  wipe(known)
+  if type(db.db) == "table" then
+    for key, entry in pairs(db.db) do
+      if type(entry) == "table" then known[key] = entry.m end
+    end
+  end
   hooksecurefunc(db, "SetPrice", function(self, key, price, available)
     if self == hookedDB then OnLocalPrice(key, price, available) end
   end)
@@ -104,18 +127,20 @@ end
 ----------------------------------------------------------------------------------------------
 -- Writing friends' prices into Auctionator
 
--- Same per-day rules as Auctionator's SetPrice, but on the day the price was actually seen.
+-- Returns "changed" (newer and a different price), "same" (newer, same price: only the
+-- timestamp moves), "older" (mine is newer AND different) or nil.
+-- History uses the same per-day rules as Auctionator's SetPrice, on the day the price was seen.
 local function Apply(r, key, price, available, ts)
   local db = DB()
   local data = db and db.db
-  if type(data) ~= "table" then return false end
+  if type(data) ~= "table" then return nil end
   key = tostring(key)
   price, available, ts = tonumber(price), tonumber(available), tonumber(ts)
-  if not price or price <= 0 or not ts then return false end
+  if not price or price <= 0 or not ts then return nil end
   ts = math.min(ts, ns.Now())
 
   local entry = data[key]
-  if entry ~= nil and type(entry) ~= "table" then return false end
+  if entry ~= nil and type(entry) ~= "table" then return nil end
   if not entry then
     entry = { l = {}, h = {}, a = {}, m = 0 }
     data[key] = entry
@@ -123,10 +148,19 @@ local function Apply(r, key, price, available, ts)
   entry.l = entry.l or {}
   entry.h = entry.h or {}
 
-  local newer = ts > SeenAt(r, key, entry)
-  if newer then
-    entry.m = price
+  local result
+  if ts > SeenAt(r, key, entry) then
     r.ts[key] = ts
+    if entry.m ~= price then
+      entry.m = price
+      known[key] = price
+      r.ch[key] = ns.Now()
+      result = "changed"
+    else
+      result = "same"
+    end
+  elseif (entry.m or 0) > 0 and entry.m ~= price then
+    result = "older"
   end
 
   local day = floor((ts - DayZero()) / 86400)
@@ -145,49 +179,60 @@ local function Apply(r, key, price, available, ts)
       entry.a[d] = math.max(entry.a[d] or 0, available)
     end
   end
-  return newer
+  return result
 end
 
 ----------------------------------------------------------------------------------------------
 -- Sending prices
 
--- list = { {key, price, available, ts}, ... }
-function ns.SendEntries(targets, list, prio, finalFlag)
+local transferCounter = 0
+
+-- list = { {key, price, available, ts}, ... }; sent as one transfer of BATCH-sized messages,
+-- the last one marked fin. opts.cu marks a catch-up reply.
+function ns.SendEntries(targets, list, prio, opts)
   local realm = ns.RealmKey()
-  local i, n = 1, #list
-  if n == 0 and finalFlag then
-    for _, t in ipairs(targets) do ns.Send(t, { t = "DATA", r = realm, e = {}, b = 0, fin = true }, prio) end
+  transferCounter = transferCounter + 1
+  local x = transferCounter
+  local cu = opts and opts.cu or nil
+  local n = #list
+  if n == 0 then
+    for _, t in ipairs(targets) do
+      ns.Send(t, { t = "DATA", r = realm, x = x, e = {}, b = 0, fin = true, cu = cu }, prio)
+    end
     return
   end
+  local i = 1
   while i <= n do
+    local last = math.min(i + BATCH - 1, n)
     local base = math.huge
-    for j = i, math.min(i + BATCH - 1, n) do base = math.min(base, list[j][4]) end
+    for j = i, last do base = math.min(base, list[j][4]) end
     local e = {}
-    for j = i, math.min(i + BATCH - 1, n) do
+    for j = i, last do
       local it = list[j]
       e[#e + 1] = it[1]
       e[#e + 1] = it[2]
       e[#e + 1] = it[3] or 0
       e[#e + 1] = it[4] - base
     end
-    i = i + BATCH
-    local msg = { t = "DATA", r = realm, e = e, b = base, fin = (finalFlag and i > n) or nil }
+    local msg = { t = "DATA", r = realm, x = x, e = e, b = base, fin = (last == n) or nil, cu = cu }
     for _, t in ipairs(targets) do ns.Send(t, msg, prio) end
+    i = last + 1
   end
 end
 
--- Every price seen after `since` (and within maxAgeDays).
+-- Prices that changed here after `since` and were seen within maxAgeDays.
 local function Collect(since)
   local r, db = Realm(), DB()
   local list = {}
   if not r or not db or type(db.db) ~= "table" then return list end
-  local cutoff = math.max(since or 0, ns.Now() - ns.db.maxAgeDays * 86400)
+  since = since or 0
+  local oldest = ns.Now() - ns.db.maxAgeDays * 86400
   for key, entry in pairs(db.db) do
-    if type(entry) == "table" and (entry.m or 0) > 0 then
+    if type(entry) == "table" and (entry.m or 0) > 0 and ChangedAt(r, key, entry) > since then
       local ts = SeenAt(r, key, entry)
-      if ts > cutoff then
-        local today = entry.a and tostring(floor((ts - DayZero()) / 86400))
-        list[#list + 1] = { key, entry.m, today and entry.a[today] or 0, ts }
+      if ts > oldest then
+        local day = entry.a and tostring(floor((ts - DayZero()) / 86400))
+        list[#list + 1] = { key, entry.m, day and entry.a[day] or 0, ts }
       end
     end
   end
@@ -198,16 +243,25 @@ end
 -- Catching up
 
 local catchUp -- { started, since, offers = { [peerKey] = n }, chosen, verbose }
-local received = {} -- peer name -> count of newer prices, for the chat summary
-local announceTimer
 
-local function Announce()
-  announceTimer = nil
-  if not ns.db.announce then wipe(received); return end
-  for name, count in pairs(received) do
-    if count > 0 then ns.Print("%d newer price%s from %s.", count, count == 1 and "" or "s", name) end
+-- One chat line per transfer, when its last batch lands (not one per batch).
+local transfers = {} -- peerKey .. "/" .. x -> { name, changed, corrections = {}, timer }
+
+local function FinishTransfer(tkey, peer)
+  local tr = transfers[tkey]
+  if not tr then return end
+  transfers[tkey] = nil
+  if tr.timer then tr.timer:Cancel() end
+  if ns.db.announce and tr.changed > 0 then
+    ns.Print("%d changed price%s from %s.", tr.changed, tr.changed == 1 and "" or "s", tr.name)
+  elseif tr.verbose then
+    ns.Print("Nothing new from %s - your prices match.", tr.name)
   end
-  wipe(received)
+  -- They sent prices that are older than ours and different: send ours back so they're fixed too.
+  if peer and #tr.corrections > 0 then
+    ns.SendEntries({ ns.ReplyTarget(peer) }, tr.corrections, "BULK")
+    ns.Debug("sent %d newer prices back to %s", #tr.corrections, tr.name)
+  end
 end
 
 function ns.CatchUp(verbose)
@@ -227,7 +281,7 @@ function ns.CatchUp(verbose)
   for _, t in ipairs(targets) do
     ns.Send(t, { t = "HELLO", r = ns.RealmKey(), since = since }, "ALERT")
   end
-  if verbose then ns.Print("Asking %d place%s for newer prices...", #targets, #targets == 1 and "" or "s") end
+  if verbose then ns.Print("Asking %d place%s for changed prices...", #targets, #targets == 1 and "" or "s") end
   local mine = catchUp
   C_Timer.After(PONG_WAIT, function()
     if catchUp ~= mine then return end
@@ -243,7 +297,7 @@ function ns.CatchUp(verbose)
     end
     mine.chosen = bestKey
     local peer = ns.peers[bestKey]
-    if verbose then ns.Print("Getting %d price%s from %s.", bestN, bestN == 1 and "" or "s", peer.name) end
+    if verbose then ns.Print("Getting up to %d price%s from %s.", bestN, bestN == 1 and "" or "s", peer.name) end
     ns.Send(ns.ReplyTarget(peer), { t = "REQ", r = ns.RealmKey(), since = mine.since }, "ALERT")
   end)
 end
@@ -278,23 +332,42 @@ function ns.OnMessage(msg, peer)
     if serving[peerKey] then return end
     serving[peerKey] = true
     local list = Collect(tonumber(msg.since) or 0)
-    ns.SendEntries({ ns.ReplyTarget(peer) }, list, "BULK", true)
-    ns.Debug("sending %d prices to %s", #list, peer.name)
+    ns.SendEntries({ ns.ReplyTarget(peer) }, list, "BULK", { cu = true })
+    ns.Debug("sending %d changed prices to %s", #list, peer.name)
     C_Timer.After(120, function() serving[peerKey] = nil end)
 
   elseif msg.t == "DATA" then
     local e, base = msg.e, tonumber(msg.b) or 0
     if type(e) ~= "table" then return end
-    local newer = 0
-    for i = 1, #e - 3, 4 do
-      if Apply(r, e[i], e[i + 1], e[i + 2], base + (tonumber(e[i + 3]) or 0)) then newer = newer + 1 end
+    local tkey = peerKey .. "/" .. tostring(msg.x)
+    local tr = transfers[tkey]
+    if not tr then
+      tr = { name = peer.name, changed = 0, corrections = {},
+        verbose = msg.cu and catchUp and catchUp.chosen == peerKey and catchUp.verbose }
+      transfers[tkey] = tr
     end
-    received[peer.name] = (received[peer.name] or 0) + newer
-    if announceTimer then announceTimer:Cancel() end
-    announceTimer = C_Timer.NewTimer(3, Announce)
-    if msg.fin and catchUp and catchUp.chosen == peerKey then
-      r.lastCatchUp = catchUp.started
-      catchUp = nil
+    local entries = DB() and DB().db
+    for i = 1, #e - 3, 4 do
+      local key = e[i]
+      local result = Apply(r, key, e[i + 1], e[i + 2], base + (tonumber(e[i + 3]) or 0))
+      if result == "changed" then
+        tr.changed = tr.changed + 1
+      elseif result == "older" and msg.cu and entries then
+        -- only for catch-up replies: a guild broadcast would get a correction from everyone
+        key = tostring(key)
+        local mine = entries[key]
+        tr.corrections[#tr.corrections + 1] = { key, mine.m, 0, SeenAt(r, key, mine) }
+      end
+    end
+    if tr.timer then tr.timer:Cancel() end
+    if msg.fin then
+      FinishTransfer(tkey, peer)
+      if msg.cu and catchUp and catchUp.chosen == peerKey then
+        r.lastCatchUp = catchUp.started
+        catchUp = nil
+      end
+    else
+      tr.timer = C_Timer.NewTimer(ANNOUNCE_FALLBACK, function() FinishTransfer(tkey, peer) end)
     end
   end
 end
@@ -306,6 +379,9 @@ local function PruneTimestamps()
   for _, r in pairs(ns.store.realms) do
     for key, ts in pairs(r.ts) do
       if ts < cutoff then r.ts[key] = nil end
+    end
+    for key, ts in pairs(r.ch or {}) do
+      if ts < cutoff then r.ch[key] = nil end
     end
   end
 end
