@@ -10,8 +10,8 @@ A companion addon for [Auctionator](https://www.curseforge.com/wow/addons/auctio
 Everyone needs AuctionatorSync installed (plus Auctionator). Prices only sync between characters on the same realm and faction, because Auctionator keeps a separate price list for each of those.
 
 ## How it works
-- After you scan, the new prices are sent to everyone online with the addon.
-- When you log in, it asks who has prices you missed and fetches them from the friend with the most.
+- After you scan, only the prices that changed are sent to everyone online with the addon. A rescan that finds the same prices sends nothing.
+- When you log in, it asks who has prices that changed since your last catch-up and fetches them from the friend with the most.
 - Every price carries the time it was seen, and the newest one always wins.
 - Auctionator's own files are never touched. AuctionatorSync watches Auctionator saving prices from outside and writes friends' prices into the same price table a scan fills.
 
