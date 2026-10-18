@@ -45,10 +45,11 @@ local function Realm()
   if not key then return nil end
   local r = ns.store.realms[key]
   if not r then
-    r = { ts = {}, ch = {}, lastCatchUp = 0 }
+    r = { ts = {}, ch = {}, unsent = {}, lastCatchUp = 0 }
     ns.store.realms[key] = r
   end
   r.ch = r.ch or {}
+  r.unsent = r.unsent or {}
   return r
 end
 
@@ -102,28 +103,43 @@ end
 -- What each item's price was before the current scan touched it. The hook runs after
 -- Auctionator's SetPrice has already overwritten m, so we keep our own copy (memory only).
 local known = {}
--- pending[key] = { price, available, before }: the newest price since the last update, and
--- what the price was at that last update (if it has gone back to that, there's nothing to send).
-local pending = {}
 local hookedDB
 
--- Runs every SHARE_INTERVAL. Prices that changed while no one was online aren't lost: their
--- change time is saved, so friends get them in their next catch-up.
+-- The send queue: r.unsent[key] = the price at the last update we sent (0 if none). Saved with
+-- the realm, so changes made while nobody was online wait across logouts until someone is.
+-- Sent every SHARE_INTERVAL, and a few seconds after anyone comes online.
 function ns.FlushShared()
-  local r = Realm()
-  if not r or not ns.db.shareScans or not next(pending) then wipe(pending); return end
+  local r, db = Realm(), DB()
+  if not r or not db or type(db.db) ~= "table" or not next(r.unsent) then return end
+  if not ns.db.shareScans then wipe(r.unsent); return end
   local targets = ns.PeerTargets()
-  if #targets == 0 then wipe(pending); return end
+  if #targets == 0 then return end -- nobody online: keep the queue for later
   local list = {}
-  for key, info in pairs(pending) do
-    if info[1] ~= info[3] then
-      list[#list + 1] = { key, info[1], info[2], r.ts[key] or ns.Now() }
+  local oldest = ns.Now() - ns.db.maxAgeDays * 86400
+  for key, before in pairs(r.unsent) do
+    local entry = db.db[key]
+    local ts = r.ts[key] or 0
+    -- skip it if it went back to the price we last sent, or is too old to be worth sending
+    if type(entry) == "table" and (entry.m or 0) > 0 and entry.m ~= before and ts > oldest then
+      local day = entry.a and tostring(math.floor((ts - DayZero()) / 86400))
+      list[#list + 1] = { key, entry.m, day and entry.a[day] or 0, ts }
     end
   end
-  wipe(pending)
+  wipe(r.unsent)
   if #list == 0 then return end
   ns.SendEntries(targets, list, "NORMAL")
   ns.Debug("shared %d changed prices", #list)
+end
+
+-- Someone came online (their HELLO, or their answer to ours): send the queue shortly, once
+-- they're registered as a peer. Several arriving together share one send.
+local flushSoon
+function ns.FlushSoon()
+  if flushSoon then return end
+  flushSoon = C_Timer.NewTimer(5, function()
+    flushSoon = nil
+    ns.FlushShared()
+  end)
 end
 
 local function OnLocalPrice(key, price, available)
@@ -134,12 +150,7 @@ local function OnLocalPrice(key, price, available)
   r.ts[key] = now
   if ns.NoteScanKey then ns.NoteScanKey(key) end
   if known[key] == price then return end -- same price as before: seen again, nothing to send
-  local p = pending[key]
-  if p then
-    p[1], p[2] = price, available or 0
-  else
-    pending[key] = { price, available or 0, known[key] }
-  end
+  if r.unsent[key] == nil then r.unsent[key] = known[key] or 0 end
   NoteChange(r, key, price, known[key], nil)
   known[key] = price
   r.ch[key] = now
@@ -191,6 +202,7 @@ local function Apply(r, key, price, available, ts)
   r.ts[key] = ts
   if entry.m == price then return "same" end
   local was = entry.m
+  r.unsent[key] = nil
   entry.m = price
   entry.l = entry.l or {}
   entry.h = entry.h or {}
@@ -526,11 +538,13 @@ function ns.OnMessage(msg, peer)
   local peerKey = ns.ShortName(peer.name)
 
   if msg.t == "HELLO" then
+    ns.FlushSoon()
     local reply = { t = "PONG", r = ns.RealmKey() }
     if msg.since then reply.n = #Collect(tonumber(msg.since) or 0) end
     ns.Send(ns.ReplyTarget(peer), reply, "ALERT")
 
   elseif msg.t == "PONG" then
+    ns.FlushSoon()
     if catchUp and msg.n then catchUp.offers[peerKey] = tonumber(msg.n) or 0 end
 
   elseif msg.t == "REQ" then

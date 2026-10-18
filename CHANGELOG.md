@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.0
+- **Your scans reach friends even if nobody was online when you scanned.** Changed prices that couldn't be sent now wait in a queue, kept across logouts, instead of being dropped. As soon as anyone with AuctionatorSync comes online, whether they log in while you're on or you log in while they're on, the queue goes out a few seconds later (one guild message covers the whole guild). Before, a catch-up only ever pulled prices toward whoever had just logged in, so your scan could miss friends who were online before you.
+- An item a friend has since updated with a newer price is dropped from your queue; an item whose price went back to what you last sent is skipped.
+- Updates are only sent to people who are still online, so you no longer see "No player named ... is currently playing." for friends who logged off.
+
 ## 0.7.2
 - New icon: a bronze gavel on its sound block with a blue sync badge (two circling arrows) in the corner, replacing the goblin auctioneer. Original artwork, in the spirit of Auctionator's gavel.
 

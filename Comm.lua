@@ -36,6 +36,8 @@ function ns.IsFriend(name) return friendSet[ns.ShortName(name)] ~= nil end
 
 -- Is a peer we've heard from this session still online?
 function ns.IsPeerOnline(peer)
+  -- just heard from them: online, even if the guild roster hasn't caught up yet
+  if peer.lastSeen and ns.Now() - peer.lastSeen < 120 then return true end
   local short = ns.ShortName(peer.name)
   if guildSet[short] then return true end
   local f = friendSet[short]
@@ -136,7 +138,9 @@ end
 function ns.PeerTargets()
   local list, guildDone = {}, false
   for _, peer in pairs(ns.peers) do
-    if peer.via == "guild" then
+    if peer.otherRealm or not ns.IsPeerOnline(peer) then
+      -- logged off since (a whisper would print "No player named ..."), or not on our AH
+    elseif peer.via == "guild" then
       if not guildDone and ns.db.guild and IsInGuild() then
         guildDone = true
         table.insert(list, { kind = "GUILD" })
