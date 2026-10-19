@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.15.9
+- Shift-clicking a bag item into the Price List search no longer also opens the stack split box (Blizzard's or EllesmereUI's). When the Price List isn't the one taking the click, splitting works as normal.
+
 ## 0.15.8
 - Price List search: a small **x** inside the end of the search box clears it (shown only when there's text), and clicking into the box selects what's there, so you can just start typing to replace it.
 

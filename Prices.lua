@@ -905,7 +905,23 @@ local function OnInsertLink(text)
   if not name or name == "" then return end
   win.search:SetText(name)
   win.search:SetCursorPosition(#name)
+  ns.tookLinkAt = GetTime()
 end
+
+-- The same shift-click on a bag stack would also open the split box (Blizzard's, which
+-- EllesmereUI's bags then replace with their own): we only watch the link go by, so the bag
+-- never hears that it was used. If the split box opens in the very click we took the link from,
+-- close it at once (EllesmereUI only takes over a split box that's still open, so it stays
+-- quiet too). Any other shift-click splits as normal.
+local function HookSplitBox()
+  if not StackSplitFrame or StackSplitFrame.aucSyncHooked then return end
+  StackSplitFrame.aucSyncHooked = true
+  StackSplitFrame:HookScript("OnShow", function(self)
+    if ns.tookLinkAt == GetTime() then self:Hide() end
+  end)
+end
+HookSplitBox()
+ns.On("PLAYER_LOGIN", HookSplitBox)
 
 if ChatFrameUtil and ChatFrameUtil.InsertLink then
   hooksecurefunc(ChatFrameUtil, "InsertLink", OnInsertLink)
