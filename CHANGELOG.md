@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.15.5
+- Price List: shift-click an item (in your bags, a chat link, anywhere) while the Price List is open and its name goes into the search box, like at the auction house. While you're typing in chat, the link goes to chat as usual.
+
 ## 0.15.4
 - The Price List's **Settings** button now toggles the `/async` window: click it again to close it.
 

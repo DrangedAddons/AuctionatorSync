@@ -869,3 +869,22 @@ function ns.TogglePriceList()
   if not win:IsShown() then ns.PlaceWindow(win) end
   win:SetShown(not win:IsShown())
 end
+
+-- Shift-click an item (bags, chat, the list itself) while the Price List is open: its name goes
+-- into the search box, like the auction house. Not while typing in chat (the link goes there).
+-- Hooked from outside, like Auctionator does: replacing the function causes taint.
+local function OnInsertLink(text)
+  if not win or not win:IsShown() or type(text) ~= "string" then return end
+  local focus = GetCurrentKeyBoardFocus and GetCurrentKeyBoardFocus()
+  if focus and focus ~= win.search then return end -- a chat box (or something else) is taking it
+  local name = text:match("|h%[(.-)%]|h") or text:match("%[(.-)%]")
+  if not name or name == "" then return end
+  win.search:SetText(name)
+  win.search:SetCursorPosition(#name)
+end
+
+if ChatFrameUtil and ChatFrameUtil.InsertLink then
+  hooksecurefunc(ChatFrameUtil, "InsertLink", OnInsertLink)
+elseif ChatEdit_InsertLink then
+  hooksecurefunc("ChatEdit_InsertLink", OnInsertLink)
+end
