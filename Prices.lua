@@ -207,7 +207,8 @@ local allRows = {}
 local visible, visibleDirty = {}, true
 
 -- The Filter dropdown (like the auction house's): level range, usable only, uncollected only and
--- rarity. Saved in ns.db.priceFilters; rarity[q] == false hides that quality.
+-- rarity. Saved in ns.db.priceFilters. Nothing ticked = no filter; ticking turns one on. For
+-- rarity, rarity[q] = true: with any ticked, only the ticked qualities show.
 local CanUseItem = C_PlayerInfo and C_PlayerInfo.CanUseItem
 local TMog = C_TransmogCollection
 local HAS_COLLECTION = TMog and TMog.GetItemInfo and TMog.PlayerHasTransmogItemModifiedAppearance and true or false
@@ -216,17 +217,21 @@ local usableCache, uncollectedCache = {}, {}
 
 local function Filters()
   ns.db.priceFilters = ns.db.priceFilters or { rarity = {} }
-  ns.db.priceFilters.rarity = ns.db.priceFilters.rarity or {}
-  return ns.db.priceFilters
+  local f = ns.db.priceFilters
+  f.rarity = f.rarity or {}
+  for q, v in pairs(f.rarity) do
+    if v ~= true then f.rarity[q] = nil end -- 0.15.0 stored "hidden" as false; that meaning is gone
+  end
+  return f
+end
+
+local function AnyRarity(f)
+  return next(f.rarity) ~= nil
 end
 
 local function FiltersActive()
   local f = Filters()
-  if f.minLevel or f.maxLevel or f.usable or f.uncollected then return true end
-  for _, shown in pairs(f.rarity) do
-    if shown == false then return true end
-  end
-  return false
+  return (f.minLevel or f.maxLevel or f.usable or f.uncollected or AnyRarity(f)) and true or false
 end
 
 local function Usable(id)
@@ -258,7 +263,7 @@ local function Uncollected(id)
 end
 
 local function PassesFilters(row, f)
-  if f.rarity[row.quality] == false then return false end
+  if AnyRarity(f) and not f.rarity[row.quality] then return false end
   if f.minLevel and row.level < f.minLevel then return false end
   if f.maxLevel and row.level > f.maxLevel then return false end
   if f.usable and not Usable(row.id) then return false end
@@ -404,6 +409,7 @@ local function RefreshList()
   local filtering = FiltersActive()
   win.clear:SetEnabled(state.classID ~= nil or state.search ~= "" or filtering)
   win.filterButton:SetText(filtering and "|cff66ccffFilter *|r" or "Filter")
+  win.filterClear:SetEnabled(filtering)
   list.empty:SetShown(#rows == 0)
   for _, h in ipairs(list.headings) do
     local active = (ns.db.priceSort or "name") == h.key
@@ -496,6 +502,24 @@ local function Build()
   filterButton:SetText("Filter")
   win.filterButton = filterButton
 
+  -- just this dropdown's filters
+  local filterClear = CreateFrame("Button", nil, win)
+  filterClear:SetSize(20, 20)
+  filterClear:SetPoint("LEFT", filterButton, "RIGHT", 4, 0)
+  filterClear:SetNormalTexture("Interface\Buttons\UI-GroupLoot-Pass-Up")
+  filterClear:SetHighlightTexture("Interface\Buttons\UI-GroupLoot-Pass-Highlight")
+  filterClear:SetPushedTexture("Interface\Buttons\UI-GroupLoot-Pass-Down")
+  filterClear:SetDisabledTexture("Interface\Buttons\UI-GroupLoot-Pass-Up")
+  filterClear:GetDisabledTexture():SetDesaturated(true)
+  filterClear:GetDisabledTexture():SetAlpha(0.4)
+  filterClear:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:SetText("Clear the Filter dropdown")
+    GameTooltip:Show()
+  end)
+  filterClear:SetScript("OnLeave", GameTooltip_Hide)
+  win.filterClear = filterClear
+
   local panel = CreateFrame("Frame", nil, filterButton, "BackdropTemplate")
   panel:SetPoint("TOPLEFT", filterButton, "BOTTOMLEFT", 0, -2)
   panel:SetWidth(190)
@@ -575,10 +599,8 @@ local function Build()
   for _, q in ipairs(RARITIES) do
     local r, g, b = QualityColor(q[1])
     panel.checks[#panel.checks + 1] = Check(q[2], { r, g, b },
-      function() return Filters().rarity[q[1]] ~= false end,
-      function(on)
-        if on then Filters().rarity[q[1]] = nil else Filters().rarity[q[1]] = false end
-      end)
+      function() return Filters().rarity[q[1]] == true end,
+      function(on) Filters().rarity[q[1]] = on or nil end)
   end
   panel:SetHeight(-y + 8)
 
@@ -604,8 +626,14 @@ local function Build()
     end
   end)
   win.filterPanel = panel
+  win.filterClear:SetScript("OnClick", function()
+    ns.db.priceFilters = { rarity = {} }
+    if panel:IsShown() then panel:Sync() end
+    Changed()
+  end)
 
-  -- above the categories: back to All, search emptied (greyed out while nothing is filtered)
+  -- above the categories: clears ALL filters - category, search and the Filter dropdown
+  -- (greyed out while nothing is filtered)
   local clear = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
   clear:SetSize(SIDE_W, 22)
   clear:SetPoint("TOPLEFT", 12, -37)

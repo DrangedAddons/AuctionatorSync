@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.1
+- Price List Filter: nothing is ticked to start, and nothing ticked means no filter. Ticking something turns that filter on; for **Rarity**, ticking qualities shows only those (untick them all and every quality shows again).
+- A small red X next to **Filter** clears just the Filter dropdown. The **Clear filters** button above the categories clears everything: category, search and the Filter dropdown.
+
 ## 0.15.0
 - **Price List Filter**, like the auction house's: a **Filter** button next to the search box opens a panel with **Level Range** (min / max required level), **Uncollected Only** (gear whose appearance this account hasn't collected), **Usable Only** (items this character can use), and **Rarity** (Poor to Legendary, in their colours, all ticked to start). The button reads "Filter *" in blue while any of these are active, and **Clear filters** resets them along with the category and search. Uncollected Only and Usable Only only appear if the game client supports them.
 - The name book now also keeps each item's required level (needed for Level Range). Items saved before this version get it added once, behind the usual loading bar.
