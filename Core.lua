@@ -123,6 +123,14 @@ ns.On("ADDON_LOADED", function(name)
   ns.db = db.settings
 end)
 
+-- Price List shortcuts: /ah, and a key binding (Bindings.xml; set the key in the game's
+-- Keybindings menu under AddOns > AuctionatorSync).
+BINDING_HEADER_AUCTIONATORSYNC = "AuctionatorSync"
+BINDING_NAME_AUCTIONATORSYNC_PRICELIST = "Open / close the Price List"
+function AuctionatorSync_TogglePriceList() ns.TogglePriceList() end
+SLASH_AUCTIONATORSYNCPRICES1 = "/ah"
+SlashCmdList.AUCTIONATORSYNCPRICES = function() ns.TogglePriceList() end
+
 SLASH_AUCTIONATORSYNC1 = "/async"
 SLASH_AUCTIONATORSYNC2 = "/aucsync"
 SlashCmdList.AUCTIONATORSYNC = function(msg)
@@ -139,6 +147,6 @@ SlashCmdList.AUCTIONATORSYNC = function(msg)
     ns.ToggleWindow()
   else
     ns.Print("|cffffd100/async|r window · |cffffd100/async sync|r sync now · "
-      .. "|cffffd100/async status|r what's synced · |cffffd100/async prices|r price list · |cffffd100/async log|r verbose log")
+      .. "|cffffd100/async status|r what's synced · |cffffd100/ah|r or |cffffd100/async prices|r price list · |cffffd100/async log|r verbose log")
   end
 end

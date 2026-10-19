@@ -1,0 +1,7 @@
+<Bindings>
+  <!-- Opens / closes the Price List. No default key: set one under Options > Keybindings >
+       AddOns > AuctionatorSync. -->
+  <Binding name="AUCTIONATORSYNC_PRICELIST" header="AUCTIONATORSYNC" category="ADDONS" runOnUp="false">
+    AuctionatorSync_TogglePriceList()
+  </Binding>
+</Bindings>

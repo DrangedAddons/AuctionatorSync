@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.13.4
+- Quick ways to open the Price List: **`/ah`**, and a key binding. Set the key under Options > Keybindings > AddOns > AuctionatorSync ("Open / close the Price List"); there is no default key, so nothing of yours gets overwritten.
+
 ## 0.13.3
 - Price List: a **Clear filters** button above the categories sets the category back to All and empties the search. It is greyed out while nothing is filtered.
 
