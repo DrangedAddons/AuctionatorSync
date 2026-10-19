@@ -3,7 +3,7 @@
 Auctionator companion addon for WoW Forever.
 
 - Auction house price sync between players with AuctionatorSync installed.
-- New auction data is synced and shared automatically.
+- New auction data is synced and shared automatically whenever someone views or scans the auction house and discovers new prices.
 - Browse the auction house listings at any time (`/ah`).
 
 Requires [Auctionator](https://www.curseforge.com/wow/addons/auctionator).
