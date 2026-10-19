@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.15.8
+- Price List search: a small **x** inside the end of the search box clears it (shown only when there's text), and clicking into the box selects what's there, so you can just start typing to replace it.
+
 ## 0.15.7
 - Docked windows move as one group: dragging any of them (the Price List, the settings window or the log) moves the whole group together. Hold **Alt** while dragging to take just that window out of the group.
 
