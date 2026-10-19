@@ -303,7 +303,22 @@ local function RefreshOnline()
   for _, row in ipairs(all) do
     if VersionLess(newest, row.version) then newest = row.version end
   end
-  for _, row in ipairs(all) do row.old = VersionLess(row.version, newest) end
+  -- version colour against the newest: green newest, yellow same release older patch,
+  -- red older release (still syncs), grey too old to sync at all
+  local newMajor, newMinor = tostring(newest):match("^(%d+)%.(%d+)")
+  for _, row in ipairs(all) do
+    row.old = VersionLess(row.version, newest)
+    local major, minor = tostring(row.version):match("^(%d+)%.(%d+)")
+    if row.rank == 5 then
+      row.versionColor = "808080"
+    elseif not row.old then
+      row.versionColor = "33ff99"
+    elseif major == newMajor and minor == newMinor then
+      row.versionColor = "ffd100"
+    else
+      row.versionColor = "ff5555"
+    end
+  end
 
   local rows = {}
   for _, row in ipairs(all) do
@@ -342,7 +357,7 @@ local function RefreshOnline()
       row.data = data
       row.crown:SetShown(data.host and true or false)
       row.name:SetText(data.name)
-      row.version:SetText((data.color == "ff5555" and "|cffff5555" or "|cff999999") .. "v" .. tostring(data.version) .. "|r")
+      row.version:SetText("|cff" .. (data.versionColor or "999999") .. "v" .. tostring(data.version) .. "|r")
       row.status:SetText("|cff" .. data.color .. data.text .. "|r")
       row.last:SetText(data.lastSync and Ago(data.lastSync) or "|cff666666-|r")
       row:Show()
