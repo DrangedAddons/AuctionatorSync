@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.15.13
+- Descriptions now say when prices are shared: whenever someone views or scans the auction house and discovers new prices.
+
 ## 0.15.12
 - Shorter, to-the-point descriptions (AddOns list tooltip, Options > AddOns page, README, repository description).
 

@@ -69,7 +69,7 @@ local function SetupOptionsPage()
   text:SetJustifyH("LEFT")
   text:SetSpacing(3)
   text:SetText("- Auction house price sync between players with AuctionatorSync installed.\n"
-    .. "- New auction data is synced and shared automatically.\n"
+    .. "- New auction data is synced and shared automatically whenever someone views or scans the auction house and discovers new prices.\n"
     .. "- Browse the auction house listings at any time (/ah).")
 
   local settings = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
