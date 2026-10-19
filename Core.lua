@@ -14,6 +14,7 @@ local DEFAULTS = {
   catchUpOnLogin = true, -- handshake with the host when I log in
   announce = true,       -- automatic chat messages (sign-in, sync results)
   verbose = false,       -- verbose mode: record every step in the log window
+  minimap = { hide = false }, -- minimap button (LibDBIcon keeps its position here too)
 }
 
 local LOG_MAX = 500

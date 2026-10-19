@@ -27,4 +27,6 @@ A friend's price only replaces yours when it's newer. Everything travels as hidd
 - `/ah` (or `/async prices`, or a key you set under Keybindings > AddOns > AuctionatorSync) opens the Price List: every price in the master list, by category, searchable and sortable, without being at the auction house
 - `/async log` opens the log (tick **Verbose mode** in `/async` to record every step, with player names)
 
+There is also a **minimap button** (left-click: settings, right-click: Price List; untick **Show minimap button** in `/async` to hide it), the addon list button at the top of the minimap, and an entry under **Options > AddOns > AuctionatorSync** with buttons for both windows.
+
 Untick **Show chat messages** in `/async` to hide the sign-in and sync messages. Replies to commands still show.

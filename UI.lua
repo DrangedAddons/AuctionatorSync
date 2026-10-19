@@ -10,6 +10,10 @@ local OPTIONS = {
     tip = "Handshake with the host (whoever holds the master list) when you come online, so you start with the newest prices." },
   { key = "announce", label = "Show chat messages",
     tip = "Sign-in and sync messages in chat. Replies to /async commands and Sync now always show." },
+  { key = "minimapShown", label = "Show minimap button",
+    tip = "Left-click it for these settings, right-click for the Price List.",
+    get = function() return not ns.db.minimap.hide end,
+    onClick = function(on) ns.SetMinimapShown(on) end },
   { key = "verbose", label = "Verbose mode",
     tip = "Records every step (who answered, the host, what was sent and received, what changed) in a log window. Only you see it. Also /async log.",
     onClick = function(on) ns.ShowLog(on) end },
@@ -412,7 +416,9 @@ end
 
 local function Refresh()
   if not frame or not frame:IsShown() then return end
-  for _, cb in ipairs(frame.checks) do cb:SetChecked(ns.db[cb.key] and true or false) end
+  for _, cb in ipairs(frame.checks) do
+    cb:SetChecked((cb.get and cb.get()) or (not cb.get and ns.db[cb.key]) and true or false)
+  end
 
   RefreshPriceCheck()
   RefreshOnline()
@@ -451,13 +457,16 @@ local function Build()
     local cb = CreateFrame("CheckButton", nil, frame, "UICheckButtonTemplate")
     cb:SetSize(24, 24)
     cb:SetPoint("TOPLEFT", 12, y)
-    cb.key = opt.key
+    cb.key, cb.get = opt.key, opt.get
     local label = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     label:SetPoint("LEFT", cb, "RIGHT", 4, 0)
     label:SetText(opt.label)
     cb:SetScript("OnClick", function(self)
-      ns.db[self.key] = self:GetChecked() and true or false
-      if opt.onClick then opt.onClick(ns.db[self.key]) end
+      local on = self:GetChecked() and true or false
+      if opt.get then opt.onClick(on) else
+        ns.db[self.key] = on
+        if opt.onClick then opt.onClick(on) end
+      end
       Refresh()
     end)
     if opt.tip then

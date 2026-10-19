@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.0
+- **Minimap button:** left-click opens the settings, right-click the Price List, drag to move. It works with minimap-button collector addons (LibDBIcon). **Show minimap button** in `/async` hides or shows it.
+- The addon list button at the top of the minimap opens AuctionatorSync too (left-click settings, right-click Price List).
+- **Options > AddOns > AuctionatorSync:** a page with the icon, a short description of what the addon does, and **Open settings** / **Open Price List** buttons.
+- Price List: the Price column is wider, so even the gold cap (9,999,999g 99s 99c) fits inside it; the other columns moved over to make room.
+
 ## 0.13.5
 - Price List: much smoother scrolling. Scrolling now only redraws the visible rows; the filtered, sorted list is kept and only remade when the search, category, sort or prices change (before, every scroll step re-sorted the whole list). Names are lowercased once per item instead of on every comparison, the sidebar keeps its counts between scrolls, and the background refresh only rebuilds when prices have actually changed.
 

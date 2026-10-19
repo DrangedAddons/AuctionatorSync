@@ -205,10 +205,11 @@ local visible, visibleDirty = {}, true
 local sideEntries, sideDirty = {}, true -- the sidebar's categories and counts, likewise
 
 local COLS = { -- x offsets inside the list
-  { key = "price", label = "Price", x = 4, w = 110, right = true },
-  { key = "name", label = "Name", x = 128, w = 250 },
-  { key = "avail", label = "Available", x = 386, w = 64, right = true },
-  { key = "seen", label = "Last seen", x = 460, w = 70 },
+  -- Price is wide enough for the gold cap: "9,999,999g 99s 99c"
+  { key = "price", label = "Price", x = 4, w = 142, right = true },
+  { key = "name", label = "Name", x = 152, w = 226 },
+  { key = "avail", label = "Available", x = 382, w = 62, right = true },
+  { key = "seen", label = "Last seen", x = 452, w = 70 },
 }
 
 local function SortRows(rows)
