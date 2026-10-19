@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.12.1
+- The online list's filter is a dropdown: "Show: All" with an arrow; click it for All / In sync / Not in sync / Needs update, each with how many players it shows, and a tick by the current one. Clicking anywhere else closes it.
+
 ## 0.12.0
 - **The online list is a table:** Player, Version, Status and **Last sync** columns, with column headings over a gold line and striped rows. The host has a crown (like a group leader's). Hover a row for the full status, version and the exact last-sync time.
 - **Last sync** per player: when they last finished a handshake (either side), received prices from a sync, or shared their own scan, shown as "just now", "5m ago", "2h ago". Players share it with each other, so everyone sees everyone's.

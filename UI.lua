@@ -291,8 +291,19 @@ local function RefreshOnline()
     expanded and "|cffffd100-|r" or "|cffffd100+|r", #all, inSync))
 
   local filter = FILTERS[FilterIndex()]
-  frame.filterButton:SetText("Show: " .. filter.label)
-  frame.filterButton:SetShown(expanded)
+  local counts = {}
+  for _, f in ipairs(FILTERS) do
+    local n = 0
+    for _, row in ipairs(all) do
+      if not f.test or f.test(row) then n = n + 1 end
+    end
+    counts[f.key] = n
+  end
+  frame.filterDrop.counts = counts
+  frame.filterDrop.label:SetText("Show: |cffffffff" .. filter.label .. "|r")
+  frame.filterDrop:SetShown(expanded)
+  if not expanded then frame.filterDrop.menu:Hide() end
+  if frame.filterDrop.menu:IsShown() then frame.filterDrop.menu:Refresh() end
   local rows = {}
   for _, row in ipairs(all) do
     if not filter.test or filter.test(row) then rows[#rows + 1] = row end
@@ -454,22 +465,77 @@ local function Build()
   header:SetScript("OnLeave", GameTooltip_Hide)
   frame.onlineHeader = header
 
-  local filterButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  filterButton:SetSize(120, 20)
-  filterButton:SetPoint("RIGHT", frame, "RIGHT", -16, 0)
-  filterButton:SetPoint("TOP", header, "TOP", 0, 2)
-  filterButton:SetScript("OnClick", function()
-    ns.db.onlineFilter = FILTERS[FilterIndex() % #FILTERS + 1].key
-    Refresh()
+  -- Filter dropdown: "Show: All v"; click for the list (with how many players each shows).
+  -- Built by hand: the game's own dropdown menus aren't reliable on Forever.
+  local drop = CreateFrame("Button", nil, frame, "BackdropTemplate")
+  drop:SetSize(140, 20)
+  drop:SetPoint("RIGHT", frame, "RIGHT", -16, 0)
+  drop:SetPoint("TOP", header, "TOP", 0, 2)
+  drop:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+  drop:SetBackdropColor(0.1, 0.1, 0.12, 1)
+  drop:SetBackdropBorderColor(0.4, 0.4, 0.45, 1)
+  drop.label = drop:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  drop.label:SetPoint("LEFT", 8, 0)
+  drop.arrow = drop:CreateTexture(nil, "OVERLAY")
+  drop.arrow:SetSize(14, 14)
+  drop.arrow:SetPoint("RIGHT", -4, 0)
+  drop.arrow:SetTexture("Interface\\Buttons\\Arrow-Down-Up")
+  drop:SetScript("OnEnter", function(self) self:SetBackdropBorderColor(1, 0.82, 0, 1) end)
+  drop:SetScript("OnLeave", function(self) self:SetBackdropBorderColor(0.4, 0.4, 0.45, 1) end)
+
+  local menu = CreateFrame("Frame", nil, drop, "BackdropTemplate")
+  menu:SetPoint("TOPRIGHT", drop, "BOTTOMRIGHT", 0, -2)
+  menu:SetWidth(140)
+  menu:SetFrameStrata("FULLSCREEN_DIALOG")
+  menu:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+  menu:SetBackdropColor(0.08, 0.08, 0.1, 0.97)
+  menu:SetBackdropBorderColor(0.4, 0.4, 0.45, 1)
+  menu:EnableMouse(true)
+  menu:Hide()
+  menu.items = {}
+  for i, f in ipairs(FILTERS) do
+    local item = CreateFrame("Button", nil, menu)
+    item:SetHeight(18)
+    item:SetPoint("TOPLEFT", 1, -1 - (i - 1) * 18)
+    item:SetPoint("RIGHT", -1, 0)
+    local hl = item:CreateTexture(nil, "HIGHLIGHT")
+    hl:SetAllPoints()
+    hl:SetColorTexture(1, 0.82, 0, 0.18)
+    item.check = item:CreateTexture(nil, "OVERLAY")
+    item.check:SetSize(14, 14)
+    item.check:SetPoint("LEFT", 4, 0)
+    item.check:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+    item.text = item:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    item.text:SetPoint("LEFT", 22, 0)
+    item:SetScript("OnClick", function()
+      ns.db.onlineFilter = f.key
+      menu:Hide()
+      Refresh()
+    end)
+    item.filter = f
+    menu.items[i] = item
+  end
+  menu:SetHeight(#FILTERS * 18 + 2)
+  function menu:Refresh()
+    local current = FILTERS[FilterIndex()].key
+    for _, item in ipairs(self.items) do
+      local n = drop.counts and drop.counts[item.filter.key]
+      item.text:SetText(item.filter.label .. (n and ("  |cff999999" .. n .. "|r") or ""))
+      item.check:SetShown(item.filter.key == current)
+    end
+  end
+  -- a click anywhere else closes it
+  menu:SetScript("OnUpdate", function(self)
+    if (IsMouseButtonDown("LeftButton") or IsMouseButtonDown("RightButton"))
+      and not self:IsMouseOver() and not drop:IsMouseOver() then
+      self:Hide()
+    end
   end)
-  filterButton:SetScript("OnEnter", function(self)
-    GameTooltip:SetOwner(self, "ANCHOR_TOP")
-    GameTooltip:SetText("Click to change who's shown")
-    GameTooltip:AddLine("All / In sync / Not in sync / Needs update", 1, 1, 1)
-    GameTooltip:Show()
+  drop:SetScript("OnClick", function()
+    if menu:IsShown() then menu:Hide() else menu:Refresh(); menu:Show() end
   end)
-  filterButton:SetScript("OnLeave", GameTooltip_Hide)
-  frame.filterButton = filterButton
+  drop.menu = menu
+  frame.filterDrop = drop
 
   -- folded: one summary line
   frame.peers = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
