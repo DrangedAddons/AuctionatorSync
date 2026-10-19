@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.12.4
+- Status uses the same colours as Version: **green** in sync, **yellow** handshaking or waiting to sync, **red** not in sync yet, **grey** needs update.
+
 ## 0.12.3
 - Version numbers in the online list are coloured against the newest version anyone online runs: **green** the newest, **yellow** the same release with an older patch (0.12.1 when 0.12.2 is out), **red** an older release that still syncs (0.11.x), **grey** too old to sync at all.
 

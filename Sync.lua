@@ -845,11 +845,11 @@ function ns.StatusRows()
   local host = ns.GroupHost()
   local master = ns.MasterFingerprint()
   local function Text(st, d, with, compatible, version)
-    if not compatible then return "needs update", "ff5555", 5 end
+    if not compatible then return "needs update", "808080", 5 end
     if st == "syncing" then return "handshaking" .. (with and (" with " .. with) or ""), "ffd100", 2 end
     if st ~= "ready" then return "waiting to sync", "ffd100", 3 end
     if master and d == master then return "in sync", "33ff99", 1 end
-    return "not in sync yet", "ff9966", 4
+    return "not in sync yet", "ff5555", 4
   end
   local rows = {}
   local myText, myColor, myRank = Text(ns.state, ns.Fingerprint(), ns.syncingWith, true)
