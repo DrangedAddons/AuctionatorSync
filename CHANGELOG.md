@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.0
+- **The online list is a table:** Player, Version, Status and **Last sync** columns, with column headings over a gold line and striped rows. The host has a crown (like a group leader's). Hover a row for the full status, version and the exact last-sync time.
+- **Last sync** per player: when they last finished a handshake (either side), received prices from a sync, or shared their own scan, shown as "just now", "5m ago", "2h ago". Players share it with each other, so everyone sees everyone's.
+- **Sort:** click a column heading to sort by it, and click again to reverse; an arrow marks the active one. Sorting by Status keeps the host first.
+- **Filter:** the **Show:** button cycles through All, In sync, Not in sync and Needs update.
+- `/async status` adds each player's last sync time. The window is a little wider to fit the new column.
+
 ## 0.11.1
 - The online list, `/async status` and the log use the character's own name instead of "You" / "you" ("Confuciussay is handshaking with Lexi Ble (host)", "Lexi Ble received 340 prices from Fred Dingo; 40 newer than Lexi Ble's"). The price check says "From <name>'s scan".
 

@@ -318,10 +318,22 @@ ns.onlineSince = nil
 ns.state = "starting" -- "waiting" (looking for a host) | "syncing" (handshaking) | "ready"
 ns.syncingWith = nil
 
+-- Last sync: when this character last finished a handshake (either side), received prices
+-- from a sync, or shared its own scan. Shown per player in the online list.
+local function MarkSynced()
+  local r = Realm()
+  if r then r.lastSync = ns.Now() end
+end
+
+function ns.LastSync()
+  local r = Realm()
+  return r and (r.lastSync or r.lastCatchUp)
+end
+
 local stateTimer
 local function StateMsg(t)
   return { t = t or "STATE", r = ns.RealmKey(), st = ns.state, d = ns.Fingerprint(), os = ns.onlineSince,
-    w = ns.syncingWith }
+    w = ns.syncingWith, ls = ns.LastSync() }
 end
 
 -- Tell everyone our state/fingerprint (debounced: several changes in a row send one message).
@@ -395,6 +407,7 @@ function ns.ShareChanges(why)
   end
   ns.Log("%s changed %s: sharing with %s", why, ns.Plural(#list, "price"), ns.Plural(online, "player"))
   ns.SendEntries(nil, list, "NORMAL")
+  MarkSynced()
   ns.AnnounceState()
 end
 
@@ -410,6 +423,7 @@ local function FinishJoin(verbose, changed, hostName)
   if join and join.timer then join.timer:Cancel() end
   join = nil
   if r then r.lastCatchUp = ns.Now() end
+  MarkSynced()
   SetState("ready")
   if hostName then
     ns.Log("%s is in sync with %s: master list %s, fingerprint %s", ns.MyName(), hostName, ns.Plural(itemCount, "price"), ns.Fingerprint())
@@ -506,6 +520,7 @@ function ns.CatchUp(verbose)
       end
       local rr = Realm()
       if rr then rr.lastCatchUp = ns.Now() end
+      MarkSynced()
       SetState("ready")
     else
       ns.Log("%s is starting the master list; handshaking with them when they're ready", first.name)
@@ -519,7 +534,7 @@ end
 
 local function NoteState(peer, msg, isHello)
   local was, wasD, wasOffline = peer.st, peer.d, peer.lastHeard == nil
-  peer.st, peer.d, peer.os, peer.w = msg.st, msg.d, tonumber(msg.os), msg.w
+  peer.st, peer.d, peer.os, peer.w, peer.ls = msg.st, msg.d, tonumber(msg.os), msg.w, tonumber(msg.ls)
   peer.lastHeard = ns.Now()
   if isHello or wasOffline then
     ns.Log("%s came online (v%s)", peer.name, tostring(peer.version))
@@ -647,6 +662,7 @@ function ns.OnMessage(msg, peer)
           ns.SendEntries(nil, tr.brought, "NORMAL", "fwd")
         end
       end
+      MarkSynced()
       Report(tr.changed)
       ns.AnnounceState()
 
@@ -658,11 +674,13 @@ function ns.OnMessage(msg, peer)
 
     elseif tr.kind == "fwd" then
       ns.Log("%s (host) shared a newcomer's prices: %s, %s changed", peer.name, ns.Plural(tr.received, "price"), ns.Num(tr.changed))
+      MarkSynced()
       Report(tr.changed)
       ns.AnnounceState()
 
     else
       ns.Log("%s shared %s from their scan: %s changed", peer.name, ns.Plural(tr.received, "price"), ns.Num(tr.changed))
+      MarkSynced()
       Report(tr.changed)
       ns.AnnounceState()
     end
@@ -821,24 +839,27 @@ end)
 ----------------------------------------------------------------------------------------------
 -- Who's online and in sync (the /async list and /async status)
 
--- rows: { name, version, text, color, host, me }, host first
+-- rows: { name, version, text, color, rank, lastSync, host, me }, host first.
+-- rank orders statuses for sorting: in sync, handshaking, waiting, not in sync, needs update.
 function ns.StatusRows()
   local host = ns.GroupHost()
   local master = ns.MasterFingerprint()
   local function Text(st, d, with, compatible, version)
-    if not compatible then return "needs update (v" .. tostring(version) .. ")", "ff5555" end
-    if st == "syncing" then return "handshaking" .. (with and (" with " .. with) or ""), "ffd100" end
-    if st ~= "ready" then return "waiting to sync", "ffd100" end
-    if master and d == master then return "in sync", "33ff99" end
-    return "not in sync yet", "ff9966"
+    if not compatible then return "needs update", "ff5555", 5 end
+    if st == "syncing" then return "handshaking" .. (with and (" with " .. with) or ""), "ffd100", 2 end
+    if st ~= "ready" then return "waiting to sync", "ffd100", 3 end
+    if master and d == master then return "in sync", "33ff99", 1 end
+    return "not in sync yet", "ff9966", 4
   end
   local rows = {}
-  local myText, myColor = Text(ns.state, ns.Fingerprint(), ns.syncingWith, true)
-  rows[#rows + 1] = { name = ns.MyName(), version = ns.VERSION, text = myText, color = myColor, host = host == "me", me = true }
+  local myText, myColor, myRank = Text(ns.state, ns.Fingerprint(), ns.syncingWith, true)
+  rows[#rows + 1] = { name = ns.MyName(), version = ns.VERSION, text = myText, color = myColor, rank = myRank,
+    lastSync = ns.LastSync(), host = host == "me", me = true }
   for _, peer in pairs(ns.peers) do
     if ns.IsPeerOnline(peer) and not peer.otherRealm then
-      local t, c = Text(peer.st, peer.d, peer.w, Compatible(peer), peer.version)
-      rows[#rows + 1] = { name = peer.name, version = peer.version, text = t, color = c, host = host == peer }
+      local t, c, rank = Text(peer.st, peer.d, peer.w, Compatible(peer), peer.version)
+      rows[#rows + 1] = { name = peer.name, version = peer.version, text = t, color = c, rank = rank,
+        lastSync = peer.ls, host = host == peer }
     end
   end
   table.sort(rows, function(a, b)
@@ -854,9 +875,11 @@ function ns.PrintStatus()
   ns.Print("v%s on %s: %s, fingerprint %s.", ns.VERSION, tostring(ns.RealmKey() or "?"),
     ns.Plural(itemCount, "price"), ns.Fingerprint())
   if r then
-    ns.Print("Last sync: %s.", (r.lastCatchUp or 0) > 0 and date("%d %b %H:%M", r.lastCatchUp) or "never")
+    local ls = ns.LastSync()
+    ns.Print("Last sync: %s.", (ls or 0) > 0 and date("%d %b %H:%M", ls) or "never")
   end
   for _, row in ipairs(ns.StatusRows()) do
-    ns.Print("  %s%s v%s: |cff%s%s|r", row.name, row.host and " (host)" or "", tostring(row.version), row.color, row.text)
+    ns.Print("  %s%s v%s: |cff%s%s|r, last sync %s", row.name, row.host and " (host)" or "", tostring(row.version),
+      row.color, row.text, row.lastSync and date("%H:%M", row.lastSync) or "unknown")
   end
 end

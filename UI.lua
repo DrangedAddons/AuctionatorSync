@@ -159,47 +159,190 @@ local function BuildPriceCheck(y)
 end
 
 ----------------------------------------------------------------------------------------------
--- Online list: everyone online with AuctionatorSync (you included): name, version, and where
--- they stand against the master list. The host (who holds the master list and hands it to
--- newcomers) is first, marked with a star. Click the header to fold it to one summary line.
+-- Online list: a table of everyone online with AuctionatorSync (this character included):
+-- Player | Version | Status. The host (holds the master list and hands it to newcomers) is
+-- first, with a crown. Click the header to fold it to one summary line.
 --   in sync           same fingerprint as the host: the same master list
 --   handshaking with  getting the master list right now
 --   waiting to sync   online, handshake not started yet
 --   not in sync yet   different prices (a fresh scan going out, or about to re-sync)
 --   needs update      an older AuctionatorSync that can't sync with this one
 
+local ROW_H = 18
+-- x offsets of the columns (Player starts at 20, after the host crown)
+local COL_VERSION, COL_STATUS, COL_LAST = 156, 212, 330
+
+-- Sorting: click a heading; click it again to reverse. "rank" (Status) keeps the host first.
+local COLUMNS = {
+  { key = "name", label = "Player", x = 20 },
+  { key = "version", label = "Version", x = COL_VERSION },
+  { key = "rank", label = "Status", x = COL_STATUS },
+  { key = "lastSync", label = "Last sync", x = COL_LAST },
+}
+
+-- Filter: the Show button cycles through these.
+local FILTERS = {
+  { key = "all", label = "All" },
+  { key = "insync", label = "In sync", test = function(r) return r.rank == 1 end },
+  { key = "notsync", label = "Not in sync", test = function(r) return r.rank >= 2 and r.rank <= 4 end },
+  { key = "update", label = "Needs update", test = function(r) return r.rank == 5 end },
+}
+
+local function FilterIndex()
+  for i, f in ipairs(FILTERS) do
+    if f.key == (ns.db.onlineFilter or "all") then return i end
+  end
+  return 1
+end
+
+-- "0.10.2" > "0.9.0": compare number by number
+local function VersionLess(a, b)
+  local pa, pb = {}, {}
+  for n in tostring(a):gmatch("%d+") do pa[#pa + 1] = tonumber(n) end
+  for n in tostring(b):gmatch("%d+") do pb[#pb + 1] = tonumber(n) end
+  for i = 1, math.max(#pa, #pb) do
+    local x, y = pa[i] or 0, pb[i] or 0
+    if x ~= y then return x < y end
+  end
+  return false
+end
+
+local function SortRows(rows)
+  local key, desc = ns.db.onlineSort or "rank", ns.db.onlineSortDesc and true or false
+  table.sort(rows, function(a, b)
+    if key == "rank" and a.host ~= b.host then return a.host end -- host first (or last, reversed)
+    local less, more
+    if key == "name" then
+      less, more = a.name:lower() < b.name:lower(), b.name:lower() < a.name:lower()
+    elseif key == "version" then
+      less, more = VersionLess(a.version, b.version), VersionLess(b.version, a.version)
+    elseif key == "lastSync" then
+      local x, y = a.lastSync or 0, b.lastSync or 0
+      less, more = x > y, y > x -- most recent first
+    else
+      less, more = a.rank < b.rank, b.rank < a.rank
+    end
+    if less ~= more then
+      if desc then return more end
+      return less
+    end
+    return a.name:lower() < b.name:lower()
+  end)
+end
+local CROWN = "Interface\\GroupFrame\\UI-Group-LeaderIcon"
+
+local function TableRow(i)
+  local t = frame.onlineTable
+  local row = t.rows[i]
+  if row then return row end
+  row = CreateFrame("Frame", nil, t)
+  row:SetHeight(ROW_H)
+  row:SetPoint("TOPLEFT", t.head, "BOTTOMLEFT", 0, -2 - (i - 1) * ROW_H)
+  row:SetPoint("RIGHT", t, "RIGHT")
+  row.stripe = row:CreateTexture(nil, "BACKGROUND")
+  row.stripe:SetAllPoints()
+  row.stripe:SetColorTexture(1, 1, 1, i % 2 == 0 and 0.05 or 0)
+  row.crown = row:CreateTexture(nil, "ARTWORK")
+  row.crown:SetSize(14, 14)
+  row.crown:SetPoint("LEFT", 2, 0)
+  row.crown:SetTexture(CROWN)
+  row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  row.name:SetPoint("LEFT", 20, 0)
+  row.name:SetWidth(COL_VERSION - 24)
+  row.name:SetJustifyH("LEFT")
+  row.name:SetWordWrap(false)
+  row.version = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  row.version:SetPoint("LEFT", COL_VERSION, 0)
+  row.version:SetJustifyH("LEFT")
+  row.status = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  row.status:SetPoint("LEFT", COL_STATUS, 0)
+  row.status:SetWidth(COL_LAST - COL_STATUS - 6)
+  row.status:SetJustifyH("LEFT")
+  row.status:SetWordWrap(false)
+  row.last = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  row.last:SetPoint("LEFT", COL_LAST, 0)
+  row.last:SetJustifyH("LEFT")
+  row:EnableMouse(true)
+  row:SetScript("OnEnter", function(self)
+    local d = self.data
+    if not d then return end
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:SetText(d.name)
+    GameTooltip:AddLine("AuctionatorSync v" .. tostring(d.version), 1, 1, 1)
+    GameTooltip:AddLine(d.text, tonumber(d.color:sub(1, 2), 16) / 255, tonumber(d.color:sub(3, 4), 16) / 255,
+      tonumber(d.color:sub(5, 6), 16) / 255)
+    GameTooltip:AddLine("Last sync: " .. (d.lastSync and date("%d %b %H:%M", d.lastSync) or "unknown"), 0.7, 0.7, 0.7)
+    if d.host then GameTooltip:AddLine("Host: holds the master list and hands it to whoever comes online.", 1, 0.82, 0, true) end
+    GameTooltip:Show()
+  end)
+  row:SetScript("OnLeave", GameTooltip_Hide)
+  t.rows[i] = row
+  return row
+end
+
 local function RefreshOnline()
-  local rows = ns.StatusRows()
+  local all = ns.StatusRows()
   local expanded = ns.db.onlineExpanded ~= false
   local inSync = 0
-  for _, row in ipairs(rows) do
-    if row.text == "in sync" then inSync = inSync + 1 end
+  for _, row in ipairs(all) do
+    if row.rank == 1 then inSync = inSync + 1 end
   end
   frame.onlineHeader.text:SetText(string.format("%s Online with AuctionatorSync (%d) |cff999999- %d in sync|r",
-    expanded and "|cffffd100-|r" or "|cffffd100+|r", #rows, inSync))
+    expanded and "|cffffd100-|r" or "|cffffd100+|r", #all, inSync))
 
-  local lines = {}
+  local filter = FILTERS[FilterIndex()]
+  frame.filterButton:SetText("Show: " .. filter.label)
+  frame.filterButton:SetShown(expanded)
+  local rows = {}
+  for _, row in ipairs(all) do
+    if not filter.test or filter.test(row) then rows[#rows + 1] = row end
+  end
+  SortRows(rows)
+  local t = frame.onlineTable
+  for _, h in ipairs(t.headings) do
+    local active = (ns.db.onlineSort or "rank") == h.key
+    h.text:SetText(h.label .. (active and (ns.db.onlineSortDesc and " v" or " ^") or ""))
+    h.text:SetTextColor(active and 1 or 1, active and 1 or 0.82, active and 1 or 0)
+  end
+
+  local bottom -- the lowest thing shown, to size the window
   if expanded then
-    for _, row in ipairs(rows) do
-      lines[#lines + 1] = string.format("%s%s  |cff999999v%s|r  |cff%s%s%s|r",
-        row.host and "|cffffd100*|r " or "   ", row.name, tostring(row.version), row.color,
-        row.host and "host - " or "", row.text)
+    t:Show()
+    frame.peers:Hide()
+    for i, data in ipairs(rows) do
+      local row = TableRow(i)
+      row.data = data
+      row.crown:SetShown(data.host and true or false)
+      row.name:SetText(data.name)
+      row.version:SetText((data.color == "ff5555" and "|cffff5555" or "|cff999999") .. "v" .. tostring(data.version) .. "|r")
+      row.status:SetText("|cff" .. data.color .. data.text .. "|r")
+      row.last:SetText(data.lastSync and Ago(data.lastSync) or "|cff666666-|r")
+      row:Show()
     end
+    for i = #rows + 1, #t.rows do t.rows[i]:Hide() end
+    t.empty:SetShown(#rows == 0)
+    t:SetHeight(t.head:GetHeight() + 4 + math.max(#rows, 1) * ROW_H)
+    bottom = t
   else
+    t:Hide()
     local counts, order = {}, {}
     for _, row in ipairs(rows) do
       local key = "|cff" .. row.color .. row.text:gsub(" with .*$", "") .. "|r"
       if not counts[key] then counts[key] = 0; order[#order + 1] = key end
       counts[key] = counts[key] + 1
     end
-    for _, key in ipairs(order) do lines[#lines + 1] = counts[key] .. " " .. key end
+    local parts = {}
+    for _, key in ipairs(order) do parts[#parts + 1] = counts[key] .. " " .. key end
+    frame.peers:SetText(table.concat(parts, "   "))
+    frame.peers:Show()
+    bottom = frame.peers
   end
-  frame.peers:SetText(table.concat(lines, expanded and "\n" or "   "))
 
-  -- grow or shrink the window to fit the list
-  local top, listTop = frame:GetTop(), frame.peers:GetTop()
+  -- grow or shrink the window to fit
+  local top, listTop = frame:GetTop(), bottom:GetTop()
   if top and listTop then
-    frame:SetHeight(top - listTop + frame.peers:GetStringHeight() + 16)
+    local h = bottom == t and t:GetHeight() or frame.peers:GetStringHeight()
+    frame:SetHeight(top - listTop + h + 14)
   end
 end
 
@@ -220,7 +363,7 @@ end
 
 local function Build()
   frame = CreateFrame("Frame", "AuctionatorSyncFrame", UIParent, "BackdropTemplate")
-  frame:SetSize(380, 500)
+  frame:SetSize(420, 500)
   frame:SetPoint("CENTER")
   frame:SetFrameStrata("DIALOG")
   frame:SetMovable(true)
@@ -301,7 +444,7 @@ local function Build()
   header:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     GameTooltip:SetText(ns.db.onlineExpanded == false and "Click to show everyone" or "Click to fold to a summary")
-    GameTooltip:AddLine("* host: holds the master list and hands it to whoever comes online.", 1, 1, 1, true)
+    GameTooltip:AddLine("|T" .. CROWN .. ":0|t host: holds the master list and hands it to whoever comes online.", 1, 1, 1, true)
     GameTooltip:AddLine("|cff33ff99in sync|r: the same master list as the host.", 1, 1, 1, true)
     GameTooltip:AddLine("|cffffd100handshaking / waiting to sync|r: getting the master list.", 1, 1, 1, true)
     GameTooltip:AddLine("|cffff9966not in sync yet|r: different prices for now (a fresh scan going out, or re-syncing within 2 minutes).", 1, 1, 1, true)
@@ -311,12 +454,73 @@ local function Build()
   header:SetScript("OnLeave", GameTooltip_Hide)
   frame.onlineHeader = header
 
+  local filterButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+  filterButton:SetSize(120, 20)
+  filterButton:SetPoint("RIGHT", frame, "RIGHT", -16, 0)
+  filterButton:SetPoint("TOP", header, "TOP", 0, 2)
+  filterButton:SetScript("OnClick", function()
+    ns.db.onlineFilter = FILTERS[FilterIndex() % #FILTERS + 1].key
+    Refresh()
+  end)
+  filterButton:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:SetText("Click to change who's shown")
+    GameTooltip:AddLine("All / In sync / Not in sync / Needs update", 1, 1, 1)
+    GameTooltip:Show()
+  end)
+  filterButton:SetScript("OnLeave", GameTooltip_Hide)
+  frame.filterButton = filterButton
+
+  -- folded: one summary line
   frame.peers = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
   frame.peers:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -6)
   frame.peers:SetPoint("RIGHT", frame, "RIGHT", -16, 0)
   frame.peers:SetJustifyH("LEFT")
   frame.peers:SetJustifyV("TOP")
-  frame.peers:SetSpacing(3)
+
+  -- unfolded: the table, with column headings over a thin line
+  local t = CreateFrame("Frame", nil, frame)
+  t:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -6)
+  t:SetPoint("RIGHT", frame, "RIGHT", -16, 0)
+  t.rows = {}
+  t.head = CreateFrame("Frame", nil, t)
+  t.head:SetPoint("TOPLEFT")
+  t.head:SetPoint("RIGHT")
+  t.head:SetHeight(16)
+  t.headings = {}
+  for i, col in ipairs(COLUMNS) do
+    local h = CreateFrame("Button", nil, t.head)
+    h:SetPoint("LEFT", col.x, 0)
+    h:SetHeight(16)
+    h:SetWidth(((COLUMNS[i + 1] and COLUMNS[i + 1].x) or 390) - col.x - 4)
+    h.text = h:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    h.text:SetPoint("LEFT")
+    h.key, h.label = col.key, col.label
+    h:SetScript("OnClick", function(self)
+      if (ns.db.onlineSort or "rank") == self.key then
+        ns.db.onlineSortDesc = not ns.db.onlineSortDesc
+      else
+        ns.db.onlineSort, ns.db.onlineSortDesc = self.key, false
+      end
+      Refresh()
+    end)
+    h:SetScript("OnEnter", function(self)
+      GameTooltip:SetOwner(self, "ANCHOR_TOP")
+      GameTooltip:SetText("Sort by " .. self.label:lower() .. "; click again to reverse")
+      GameTooltip:Show()
+    end)
+    h:SetScript("OnLeave", GameTooltip_Hide)
+    t.headings[#t.headings + 1] = h
+  end
+  t.empty = t:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  t.empty:SetPoint("TOPLEFT", t.head, "BOTTOMLEFT", 20, -4)
+  t.empty:SetText("Nobody matches this filter.")
+  local line = t.head:CreateTexture(nil, "ARTWORK")
+  line:SetPoint("BOTTOMLEFT", 0, -1)
+  line:SetPoint("BOTTOMRIGHT", 0, -1)
+  line:SetHeight(1)
+  line:SetColorTexture(1, 0.82, 0, 0.35)
+  frame.onlineTable = t
 
   frame:SetScript("OnShow", Refresh)
   C_Timer.NewTicker(5, Refresh)
