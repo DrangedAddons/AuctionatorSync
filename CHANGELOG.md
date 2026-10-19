@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.15.11
+- Descriptions rewritten as feature lists (AddOns list tooltip, Options > AddOns page, README, repository description).
+
 ## 0.15.10
 - Updated descriptions to match what the addon does now (the AddOns list tooltip, the Options > AddOns page, the README and the repository description): the shared, always-newest master price list, silent syncing at login and after scans, and the Price List.
 

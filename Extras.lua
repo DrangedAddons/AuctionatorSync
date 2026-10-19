@@ -61,21 +61,23 @@ local function SetupOptionsPage()
 
   local sub = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
-  sub:SetText("A companion for Auctionator, by Dranged")
+  sub:SetText("Auctionator companion addon - by Dranged")
 
   local text = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
   text:SetPoint("TOPLEFT", icon, "BOTTOMLEFT", 0, -16)
   text:SetPoint("RIGHT", panel, "RIGHT", -24, 0)
   text:SetJustifyH("LEFT")
   text:SetSpacing(3)
-  text:SetText("Everyone running AuctionatorSync shares one master price list that always holds the newest "
-    .. "price anyone has seen.\n\n"
-    .. "|cffffd100Syncing:|r when you come online you handshake with a host from the players already in sync "
-    .. "and swap only the prices that differ; when a scan finishes, its changed prices go to everyone online. "
-    .. "It runs silently, as hidden addon data, never chat. The settings window shows everyone online with "
-    .. "their version, sync status and last sync time.\n\n"
-    .. "|cffffd100Price List:|r browse every price anywhere, without being at the auction house: categories, "
-    .. "search, filters (level, usable, uncollected, rarity) and sortable columns.")
+  text:SetText("|cffffd100Price syncing|r\n"
+    .. "- Automatic price syncing between all players running AuctionatorSync\n"
+    .. "- Shared master price list: newest observed price per item\n"
+    .. "- Sync on login (host handshake) and after every Auctionator scan\n"
+    .. "- Hidden addon messages only; no chat output\n"
+    .. "- Online player table: version, sync status, last sync time\n\n"
+    .. "|cffffd100Price List|r\n"
+    .. "- Browse all synced prices away from the auction house\n"
+    .. "- Categories, search, sortable columns\n"
+    .. "- Filters: level range, usable, uncollected, rarity")
 
   local settings = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
   settings:SetSize(170, 26)
