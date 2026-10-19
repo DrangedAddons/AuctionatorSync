@@ -11,6 +11,9 @@ local OPTIONS = {
   { key = "catchUpOnLogin", label = "Sync with friends online when I log in" },
   { key = "announce", label = "Show chat messages",
     tip = "Sign-in and sync messages in chat. Replies to /async commands and Sync now always show." },
+  { key = "verbose", label = "Verbose mode",
+    tip = "Records every step (who answered, the host, what was sent and received, what changed) in a log window. Only you see it. Also /async log.",
+    onClick = function(on) ns.ShowLog(on) end },
 }
 
 local function Ago(ts)
@@ -279,6 +282,7 @@ local function Build()
     label:SetText(opt.label)
     cb:SetScript("OnClick", function(self)
       ns.db[self.key] = self:GetChecked() and true or false
+      if opt.onClick then opt.onClick(ns.db[self.key]) end
       Refresh()
     end)
     if opt.tip then
@@ -299,6 +303,12 @@ local function Build()
   sync:SetPoint("TOPLEFT", 16, y - 8)
   sync:SetText("Sync now")
   sync:SetScript("OnClick", function() ns.CatchUp(true) end)
+
+  local logButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+  logButton:SetSize(60, 24)
+  logButton:SetPoint("TOPRIGHT", -16, y - 8)
+  logButton:SetText("Log")
+  logButton:SetScript("OnClick", function() ns.ToggleLog() end)
 
   frame.status = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   frame.status:SetPoint("LEFT", sync, "RIGHT", 12, 0)

@@ -102,7 +102,12 @@ function ns.FlushShared()
   if not r or not db or type(db.db) ~= "table" or not next(r.unsent) then return end
   if not ns.db.shareScans then wipe(r.unsent); return end
   local targets = ns.PeerTargets()
-  if #targets == 0 then return end -- nobody online: keep the queue for later
+  if #targets == 0 then -- nobody online: keep the queue for later
+    local n = 0
+    for _ in pairs(r.unsent) do n = n + 1 end
+    ns.Log("nobody online: %s kept for later", ns.Plural(n, "changed price"))
+    return
+  end
   local list = {}
   local oldest = ns.Now() - ns.db.maxAgeDays * 86400
   for key, before in pairs(r.unsent) do
@@ -117,7 +122,7 @@ function ns.FlushShared()
   wipe(r.unsent)
   if #list == 0 then return end
   ns.SendEntries(targets, list, "NORMAL")
-  ns.Debug("shared %d changed prices", #list)
+  ns.Log("shared %s from your scans with everyone online", ns.Plural(#list, "changed price"))
 end
 
 local function OnLocalPrice(key, price, available)
@@ -146,7 +151,7 @@ function ns.HookAuctionator()
   hooksecurefunc(db, "SetPrice", function(self, key, price, available)
     if self == hookedDB then OnLocalPrice(key, price, available) end
   end)
-  ns.Debug("watching Auctionator's price database (%s)", tostring(ns.RealmKey()))
+  ns.Log("watching Auctionator's prices for %s", tostring(ns.RealmKey()))
 end
 
 ----------------------------------------------------------------------------------------------
@@ -326,13 +331,18 @@ local function TryNextHost()
   local key = join.candidates[join.idx]
   local peer = key and ns.peers[key]
   if not peer then
-    if join.idx > 1 then Say(join.verbose, "Couldn't finish syncing; it'll try again next time.") end
+    if join.idx > 1 then
+      ns.Log("sync gave up: no host answered")
+      Say(join.verbose, "Couldn't finish syncing; it'll try again next time.")
+    end
     DoneJoining()
     return
   end
   join.host = key
   local list = AllRecent()
-  ns.Debug("joining via %s with %d prices", peer.name, #list)
+  local p = join.pongs[key] or {}
+  ns.Log("host: %s (online since %s%s); uploading your %s",
+    peer.name, p.os and date("%H:%M", p.os) or "?", p.rd and "" or ", still syncing itself", ns.Plural(#list, "price"))
   ns.SendEntries({ ns.ReplyTarget(peer) }, list, "BULK", { k = "join" })
   local mine = join
   local function Arm()
@@ -340,7 +350,7 @@ local function TryNextHost()
     if join.timer then join.timer:Cancel() end
     join.timer = C_Timer.NewTimer(JOIN_TIMEOUT, function()
       if join == mine then
-        ns.Debug("%s went quiet, trying the next host", peer.name)
+        ns.Log("%s went quiet for %ds, trying the next host", peer.name, JOIN_TIMEOUT)
         TryNextHost()
       end
     end)
@@ -358,6 +368,7 @@ function ns.CatchUp(verbose)
     return
   end
   if ns.IsScanning() then
+    ns.Log("sync waiting for your scan to finish")
     if verbose then ns.Print("Waiting for your scan to finish first.") end
     ns.DeferSync(verbose)
     return
@@ -377,6 +388,7 @@ function ns.CatchUp(verbose)
     return
   end
   join = { verbose = verbose, pongs = {}, candidates = {}, idx = 0, started = ns.Now() }
+  ns.Log("sync started (%s): saying hello to %s", verbose and "Sync now" or "login", ns.Plural(#targets, "place"))
   for _, t in ipairs(targets) do
     ns.Send(t, { t = "HELLO", r = ns.RealmKey(), j = true }, "ALERT")
   end
@@ -387,7 +399,9 @@ function ns.CatchUp(verbose)
     for key, info in pairs(mine.pongs) do
       if ns.peers[key] then mine.candidates[#mine.candidates + 1] = key end
     end
+    ns.Log("%s answered", ns.Plural(#mine.candidates, "player"))
     if #mine.candidates == 0 then
+      ns.Log("nobody to sync with: your prices go into the next sync")
       Say(verbose, "No one online with AuctionatorSync yet. Your prices join the next sync.")
       DoneJoining()
       return
@@ -415,6 +429,9 @@ end
 function ns.OnMessage(msg, peer)
   local r = Realm()
   if not r or msg.r ~= ns.RealmKey() then
+    if not peer.otherRealm then
+      ns.Log("ignoring %s: prices for %s, not %s", peer.name, tostring(msg.r), tostring(ns.RealmKey()))
+    end
     peer.otherRealm = true
     return
   end
@@ -438,12 +455,13 @@ function ns.OnMessage(msg, peer)
     local tr = transfers[tkey]
     if not tr then
       -- k = "join": we're their host; "reply": our host answering our join; nil: a live update
-      tr = { kind = msg.k or "update", changed = 0, brought = {}, theirs = {} }
+      tr = { kind = msg.k or "update", changed = 0, received = 0, brought = {}, theirs = {} }
       transfers[tkey] = tr
     end
     for i = 1, #e - 3, 4 do
       local key, price, avail = tostring(e[i]), tonumber(e[i + 1]), tonumber(e[i + 2])
       local ts = base + (tonumber(e[i + 3]) or 0)
+      tr.received = tr.received + 1
       local result, was = Apply(r, key, price, avail, ts)
       if result == "changed" then
         tr.changed = tr.changed + 1
@@ -455,7 +473,10 @@ function ns.OnMessage(msg, peer)
     if tr.timer then tr.timer:Cancel() end
     if not msg.fin then
       -- a transfer that never finishes is dropped after a while
-      tr.timer = C_Timer.NewTimer(JOIN_TIMEOUT, function() transfers[tkey] = nil end)
+      tr.timer = C_Timer.NewTimer(JOIN_TIMEOUT, function()
+        transfers[tkey] = nil
+        ns.Log("prices from %s stopped arriving partway (%s kept)", peer.name, ns.Plural(tr.changed, "change"))
+      end)
       return
     end
     transfers[tkey] = nil
@@ -477,13 +498,15 @@ function ns.OnMessage(msg, peer)
         if #others > 0 then ns.SendEntries(others, tr.brought, "NORMAL") end
       end
       Report(tr.changed)
-      ns.Debug("hosted %s: got %d new, sent back %d", peer.name, #tr.brought, #reply)
+      ns.Log("hosted %s: %s received, %s newer than yours; sent back %s; passed %s on to others",
+        peer.name, ns.Num(tr.received), ns.Num(#tr.brought), ns.Plural(#reply, "price"), ns.Num(#tr.brought))
 
     elseif tr.kind == "reply" and join and join.host == peerKey then
       -- Our join is done: we now hold the group's best prices, and they hold ours.
       local verbose = join.verbose
       r.lastCatchUp = ns.Now()
       wipe(r.unsent) -- the host has everything we had
+      ns.Log("sync done with %s: %s received, %s changed", peer.name, ns.Num(tr.received), ns.Num(tr.changed))
       DoneJoining()
       if tr.changed > 0 then
         Say(verbose, "Synced: updated %s.", ns.Plural(tr.changed, "price"))
@@ -492,6 +515,7 @@ function ns.OnMessage(msg, peer)
       end
 
     else
+      ns.Log("update from %s: %s, %s changed", peer.name, ns.Plural(tr.received, "price"), ns.Num(tr.changed))
       Report(tr.changed)
     end
   end
@@ -527,6 +551,7 @@ local scanListener = { kinds = {} }
 function scanListener:ReceiveEvent(event)
   local kind = self.kinds[event]
   if kind == "start" then
+    ns.Log("Auctionator scan started")
     scanning = true
     if scanTimer then scanTimer:Cancel() end
     scanTimer = C_Timer.NewTimer(SCAN_TIMEOUT, function() ScanEnded(false) end)
@@ -536,8 +561,10 @@ function scanListener:ReceiveEvent(event)
       join = nil
     end
   elseif kind == "complete" then
+    ns.Log("Auctionator scan finished")
     ScanEnded(true)
   elseif kind == "failed" then
+    ns.Log("Auctionator scan failed")
     ScanEnded(false)
   end
 end

@@ -16,8 +16,11 @@ local DEFAULTS = {
   shareScans = true,     -- send my changed prices on the share timer
   catchUpOnLogin = true, -- sync with whoever's online when I log in (the host compare)
   announce = true,       -- automatic chat messages (sign-in, sync results)
-  maxAgeDays = 7,        -- catch-ups only carry prices seen in the last N days
+  maxAgeDays = 7,        -- syncs only carry prices seen in the last N days
+  verbose = false,       -- verbose mode: record every step in the log window
 }
+
+local LOG_MAX = 500
 
 -- Always shown: answers to something the player did, and errors.
 function ns.Print(fmt, ...)
@@ -47,9 +50,19 @@ function ns.NameList(names)
   return names[1] .. ", " .. names[2] .. " and " .. (n - 2) .. " others"
 end
 
-function ns.Debug(fmt, ...)
-  if ns.db and ns.db.debug then ns.Print("|cff888888" .. fmt .. "|r", ...) end
+-- Verbose mode: every step goes into the log (last LOG_MAX lines, kept across /reload) and
+-- the log window, never chat.
+function ns.Log(fmt, ...)
+  if not (ns.db and ns.db.verbose and ns.store) then return end
+  local ok, text = pcall(string.format, fmt, ...)
+  if not ok then text = fmt end
+  local line = "|cff888888" .. date("%H:%M:%S") .. "|r  " .. text
+  local log = ns.store.log
+  log[#log + 1] = line
+  if #log > LOG_MAX then table.remove(log, 1) end
+  if ns.OnLogLine then ns.OnLogLine(line) end
 end
+ns.Debug = ns.Log
 
 function ns.Now()
   return GetServerTime and GetServerTime() or time()
@@ -103,6 +116,8 @@ ns.On("ADDON_LOADED", function(name)
     if db.settings[k] == nil then db.settings[k] = v end
   end
   db.realms = db.realms or {}
+  db.log = db.log or {}
+  db.settings.debug = nil -- replaced by verbose mode
   ns.store = db
   ns.db = db.settings
 end)
@@ -115,13 +130,12 @@ SlashCmdList.AUCTIONATORSYNC = function(msg)
     ns.CatchUp(true)
   elseif cmd == "status" then
     ns.PrintStatus()
-  elseif cmd == "debug" then
-    ns.db.debug = not ns.db.debug
-    ns.Print("Debug messages %s.", ns.db.debug and "on" or "off")
+  elseif cmd == "log" or cmd == "debug" then
+    ns.ToggleLog()
   elseif cmd == "" then
     ns.ToggleWindow()
   else
     ns.Print("|cffffd100/async|r window · |cffffd100/async sync|r sync now · "
-      .. "|cffffd100/async status|r what's synced · |cffffd100/async debug|r debug messages")
+      .. "|cffffd100/async status|r what's synced · |cffffd100/async log|r verbose log")
   end
 end

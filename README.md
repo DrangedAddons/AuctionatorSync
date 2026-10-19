@@ -21,6 +21,6 @@ Everyone needs AuctionatorSync installed (plus Auctionator). Prices only sync be
 - `/async` opens the window: settings, **Sync now**, and who's online with the addon
 - `/async sync` catches up now
 - `/async status` prints what the addon knows
-- `/async debug` toggles debug messages
+- `/async log` opens the log (tick **Verbose mode** in `/async` to record every step)
 
 Untick **Show chat messages** in `/async` to hide the sign-in and sync messages. Replies to commands still show.

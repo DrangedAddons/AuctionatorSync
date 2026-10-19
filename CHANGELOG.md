@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.0
+- **Verbose mode and log window.** Tick **Verbose mode** in `/async` (off by default) and a log window opens showing what AuctionatorSync is doing, step by step and timestamped: Auctionator scans starting and finishing, changed prices shared or kept for later, every hidden message sent (>>) and received (<<), who answered at login, which host was picked and why, how many prices were uploaded, received and changed, what a host sent back and passed on, and anything ignored (another realm or faction, someone not in your guild or friends list).
+- The log keeps the last 500 lines, even across `/reload`, so you can look back at what happened. **Clear** empties it; scroll with the mouse wheel (Shift jumps to the top or bottom); drag the corner to resize. Only you can see it.
+- Open it any time with the **Log** button in `/async` or `/async log`. It only records while Verbose mode is ticked.
+- `/async debug` now opens the log too (the old debug chat lines are gone).
+
 ## 0.9.0
 **New way of syncing at login: compare with a host.** Everyone needs 0.9.0; older versions can't act as host.
 - When you log in, the addon picks a host automatically: whoever online has been on longest, preferring people who've finished their own sync. You never pick anything yourself.

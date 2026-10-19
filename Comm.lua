@@ -105,8 +105,12 @@ function ns.Send(target, msg, prio)
       CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "GUILD", nil, "AucSyncGuild")
     end
   end
-  ns.Debug("sent %s to %s (%d part%s)", tostring(msg.t), target.name or tostring(target.id or "guild"),
-    total, total == 1 and "" or "s")
+  local what = msg.t == "DATA" and string.format("%s (%d price%s%s)", msg.k and ("DATA " .. msg.k) or "DATA",
+    type(msg.e) == "table" and #msg.e / 4 or 0, (type(msg.e) == "table" and #msg.e == 4) and "" or "s",
+    msg.fin and ", last batch" or "") or msg.t
+  ns.Log("|cff66ccff>>|r %s to %s%s", what,
+    target.kind == "GUILD" and "guild" or (target.name or tostring(target.id)) .. (target.kind == "BN" and " (Battle.net)" or ""),
+    total > 1 and string.format(" in %d parts", total) or "")
 end
 
 -- Everyone we might reach, for HELLO (we don't know yet who has the addon).
@@ -199,6 +203,9 @@ local function Deliver(peerKey, text, peerInfo)
   local msg = ns.Decode(whole)
   if not msg or type(msg.t) ~= "string" then return end
   if msg.sid == ns.SESSION or ns.IsMe(peerInfo.name) then return end -- our own message
+  if msg.t ~= "DATA" then
+    ns.Log("|cff99ff99<<|r %s from %s (%s, v%s)", msg.t, peerInfo.name, peerInfo.via, tostring(msg.v))
+  end
   local peer = ns.peers[peerKey]
   if not peer then
     peer = { name = peerInfo.name }
@@ -223,6 +230,7 @@ ns.On("CHAT_MSG_ADDON", function(prefix, text, channel, sender)
     elseif ns.db.friends and ns.IsFriend(sender) then
       via = "friend"
     else
+      ns.Log("ignored a message from %s: not in your guild or friends list", sender)
       return -- not someone we sync with
     end
   else
