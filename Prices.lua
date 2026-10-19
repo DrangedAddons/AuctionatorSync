@@ -466,14 +466,12 @@ local function Build()
   local close = CreateFrame("Button", nil, win, "UIPanelCloseButton")
   close:SetPoint("TOPRIGHT", 2, 2)
 
-  -- top right: the /async settings window
+  -- top right: opens / closes the /async settings window
   local settingsButton = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
   settingsButton:SetSize(80, 20)
   settingsButton:SetPoint("RIGHT", close, "LEFT", -2, 0)
   settingsButton:SetText("Settings")
-  settingsButton:SetScript("OnClick", function()
-    if not AuctionatorSyncFrame or not AuctionatorSyncFrame:IsShown() then ns.ToggleWindow() end
-  end)
+  settingsButton:SetScript("OnClick", function() ns.ToggleWindow() end) -- opens or closes /async
 
   -- search
   local search = CreateFrame("EditBox", nil, win, "InputBoxTemplate")

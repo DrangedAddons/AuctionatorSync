@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.15.4
+- The Price List's **Settings** button now toggles the `/async` window: click it again to close it.
+
 ## 0.15.3
 - The three windows (`/async`, the log and the Price List) no longer open on top of each other. One that opens while others are up docks beside them, edge to edge with the tops level: to the left of the first open window if it fits on screen, otherwise to its right, below or above, never overlapping. With nothing else open, a window opens where you last left it.
 
