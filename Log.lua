@@ -15,8 +15,8 @@ local function Build()
   if win.SetResizeBounds then win:SetResizeBounds(360, 160) end
   win:EnableMouse(true)
   win:RegisterForDrag("LeftButton")
-  win:SetScript("OnDragStart", win.StartMoving)
-  win:SetScript("OnDragStop", win.StopMovingOrSizing)
+  win:SetScript("OnDragStart", ns.DragStart) -- moves its docked group; Alt-drag undocks it
+  win:SetScript("OnDragStop", ns.DragStop)
   win:SetBackdrop({
     bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1,
   })

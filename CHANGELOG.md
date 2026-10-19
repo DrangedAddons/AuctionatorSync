@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.15.7
+- Docked windows move as one group: dragging any of them (the Price List, the settings window or the log) moves the whole group together. Hold **Alt** while dragging to take just that window out of the group.
+
 ## 0.15.6
 - Docked windows stay docked: a window that opened beside another is attached to it, so dragging the Price List (or whichever window it docked to) brings the docked windows along. Dragging a docked window itself detaches it.
 

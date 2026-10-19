@@ -178,6 +178,36 @@ function ns.PlaceWindow(win)
   end
 end
 
+-- Dragging: docked windows move as one group - dragging any of them moves the window at the root
+-- of its dock chain, and everything attached follows. Alt-drag takes just that window out.
+local OURS = {}
+for _, name in ipairs(WINDOWS) do OURS[name] = true end
+
+local function DockRoot(f)
+  for _ = 1, 6 do
+    local _, rel = f:GetPoint(1)
+    -- only through windows that are open: a closed one can't be dragged
+    if rel and rel ~= UIParent and rel.GetName and OURS[rel:GetName() or ""] and rel:IsShown() then
+      f = rel
+    else
+      return f
+    end
+  end
+  return f
+end
+
+function ns.DragStart(f)
+  local mover = IsAltKeyDown() and f or DockRoot(f)
+  f.dragMover = mover
+  mover:StartMoving()
+end
+
+function ns.DragStop(f)
+  local mover = f.dragMover or f
+  f.dragMover = nil
+  mover:StopMovingOrSizing()
+end
+
 -- Price List shortcuts: /ah, and a key binding (Bindings.xml; set the key in the game's
 -- Keybindings menu under AddOns > AuctionatorSync).
 BINDING_HEADER_AUCTIONATORSYNC = "AuctionatorSync"
