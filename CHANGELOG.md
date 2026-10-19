@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.13.3
+- Price List: a **Clear filters** button above the categories sets the category back to All and empties the search. It is greyed out while nothing is filtered.
+
 ## 0.13.2
 - Price List: prices are split into aligned gold, silver and copper parts, so every gold amount lines up under the others, likewise silver and copper. Silver and copper always show two digits (12g 05s 00c); under 1 gold, the gold slot is left empty.
 

@@ -326,6 +326,7 @@ local function RefreshList()
     end
   end
   win.count:SetText(string.format("%s of %s", ns.Num(#rows), ns.Plural(#allRows, "item")))
+  win.clear:SetEnabled(state.classID ~= nil or state.search ~= "")
   list.empty:SetShown(#rows == 0)
   for _, h in ipairs(list.headings) do
     local active = (ns.db.priceSort or "name") == h.key
@@ -398,6 +399,20 @@ local function Build()
   search:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
   search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
   win.search = search
+
+  -- above the categories: back to All, search emptied (greyed out while nothing is filtered)
+  local clear = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
+  clear:SetSize(SIDE_W, 22)
+  clear:SetPoint("TOPLEFT", 12, -37)
+  clear:SetText("Clear filters")
+  clear:SetScript("OnClick", function()
+    state.classID, state.subClassID = nil, nil
+    search:SetText("")
+    search:ClearFocus()
+    win.list.offset, win.side.offset = 0, 0
+    Refresh()
+  end)
+  win.clear = clear
 
   win.count = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   win.count:SetPoint("RIGHT", win, "TOPRIGHT", -16, -48) -- level with the search box, at the far right
