@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.13.1
+- Price List: tidied the top row. The search box lines up with the list, the item count sits at the far right, and the overlapping note is gone (hover the **Available** heading for what that column means).
+
 ## 0.13.0
 - **Price List:** browse the master list's prices anywhere, without being at the auction house. Open it with the new **Price List** button in `/async` (or `/async prices`).
   - Laid out like the auction house: a category sidebar on the left (**All**, then each category with its item count; click one to show it, and its subcategories open underneath, click again to close them), a **search** box that filters by name as you type, and a list with **Price | Name | Available | Last seen** columns. Click a column to sort, again to reverse.

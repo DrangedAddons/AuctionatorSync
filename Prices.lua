@@ -375,7 +375,7 @@ local function Build()
   -- search
   local search = CreateFrame("EditBox", nil, win, "InputBoxTemplate")
   search:SetSize(240, 20)
-  search:SetPoint("TOPLEFT", SIDE_W + 26, -38)
+  search:SetPoint("TOPLEFT", 12 + SIDE_W + 10 + 6, -38) -- over the list's left edge (the box art sticks out ~6px)
   search:SetAutoFocus(false)
   local hint = search:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
   hint:SetPoint("LEFT", 4, 0)
@@ -393,11 +393,8 @@ local function Build()
   win.search = search
 
   win.count = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  win.count:SetPoint("LEFT", search, "RIGHT", 12, 0)
-
-  local note = win:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  note:SetPoint("TOPRIGHT", -16, -42)
-  note:SetText("Prices from the master list; Available is what the last scan saw.")
+  win.count:SetPoint("RIGHT", win, "TOPRIGHT", -16, -48) -- level with the search box, at the far right
+  win.count:SetJustifyH("RIGHT")
 
   -- sidebar
   local side = CreateFrame("Frame", nil, win, "BackdropTemplate")
@@ -481,6 +478,15 @@ local function Build()
     hl:SetAllPoints()
     hl:SetColorTexture(1, 0.82, 0, 0.12)
     h.key, h.label = col.key, col.label
+    if col.key == "avail" then
+      h:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:SetText("Available")
+        GameTooltip:AddLine("How many were listed when the item was last seen, on that day's scan.", 1, 1, 1, true)
+        GameTooltip:Show()
+      end)
+      h:SetScript("OnLeave", GameTooltip_Hide)
+    end
     h:SetScript("OnClick", function(self)
       if (ns.db.priceSort or "name") == self.key then
         ns.db.priceSortDesc = not ns.db.priceSortDesc
