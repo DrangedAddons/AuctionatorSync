@@ -91,7 +91,7 @@ local function RefreshPriceCheck()
     text = text .. "  |cff999999was " .. Money(c.was) .. "|r"
   end
   pc.price:SetText(text)
-  pc.source:SetText(string.format("|cff999999%s · %s|r", c.from and "From AuctionatorSync" or "From your scan", Ago(c.at)))
+  pc.source:SetText(string.format("|cff999999%s · %s|r", c.from and "From AuctionatorSync" or ("From " .. ns.MyName() .. "'s scan"), Ago(c.at)))
 end
 
 local function BuildPriceCheck(y)
@@ -107,7 +107,7 @@ local function BuildPriceCheck(y)
   why:SetPoint("RIGHT", frame, "RIGHT", -16, 0)
   why:SetJustifyH("LEFT")
   why:SetTextColor(0.6, 0.6, 0.6)
-  why:SetText("The latest price change. If a friend's matches, you're in sync.")
+  why:SetText("The latest price change. The same price on another player means the lists match.")
 
   local button = CreateFrame("Button", nil, frame, "BackdropTemplate")
   button:SetSize(40, 40)

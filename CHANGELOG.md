@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.11.1
+- The online list, `/async status` and the log use the character's own name instead of "You" / "you" ("Confuciussay is handshaking with Lexi Ble (host)", "Lexi Ble received 340 prices from Fred Dingo; 40 newer than Lexi Ble's"). The price check says "From <name>'s scan".
+
 ## 0.11.0
 **Sync redone around a master list.** Everyone needs 0.11.0; older versions show as "needs update" and can't sync.
 - **Everyone with AuctionatorSync syncs.** The guild / friends list / Battle.net options are gone: players are found through your guild, friends list, Battle.net friends and a hidden AuctionatorSync channel (kept out of your chat windows), and nobody is filtered out. Before, a whisper from a friend was ignored unless *you* also had *them* on your friends list, which is why friends and Battle.net friends often never synced.

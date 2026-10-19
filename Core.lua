@@ -75,6 +75,9 @@ end
 -- copy of ourselves) are always recognised and dropped, whatever the name looks like.
 ns.SESSION = string.format("%x%04x", time(), math.random(0, 0xffff))
 
+-- This character's name, for the online list and the log (never "you").
+function ns.MyName() return UnitName("player") or "?" end
+
 -- Looked up each time: at load the player's name may not be known yet.
 function ns.IsMe(name)
   local me = UnitName("player")
