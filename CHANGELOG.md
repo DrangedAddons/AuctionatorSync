@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.5
+- **Last sync** is coloured too: **green** under 10 minutes ago, **yellow** under an hour, **red** under a day, **grey** older or unknown.
+- The heading filter lists colour their choices to match (Up to date / In sync green, Old / Not in sync red).
+
 ## 0.12.4
 - Status uses the same colours as Version: **green** in sync, **yellow** handshaking or waiting to sync, **red** not in sync yet, **grey** needs update.
 

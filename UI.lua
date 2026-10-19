@@ -185,13 +185,13 @@ local COLUMNS = {
 local HEADING_FILTERS = {
   version = { db = "filterVersion", options = {
     { key = "all", label = "All" },
-    { key = "current", label = "Up to date", test = function(r) return not r.old end },
-    { key = "old", label = "Old", test = function(r) return r.old end },
+    { key = "current", label = "Up to date", color = "33ff99", test = function(r) return not r.old end },
+    { key = "old", label = "Old", color = "ff5555", test = function(r) return r.old end },
   } },
   rank = { db = "filterStatus", options = {
     { key = "all", label = "All" },
-    { key = "insync", label = "In sync", test = function(r) return r.rank == 1 end },
-    { key = "notsync", label = "Not in sync", test = function(r) return r.rank ~= 1 end },
+    { key = "insync", label = "In sync", color = "33ff99", test = function(r) return r.rank == 1 end },
+    { key = "notsync", label = "Not in sync", color = "ff5555", test = function(r) return r.rank ~= 1 end },
   } },
 }
 
@@ -213,6 +213,15 @@ local function VersionLess(a, b)
     if x ~= y then return x < y end
   end
   return false
+end
+
+-- Last sync colour: green under 10 minutes, yellow under an hour, red under a day, grey older
+local function SyncAgeColor(ts)
+  local age = ns.Now() - ts
+  if age < 600 then return "33ff99" end
+  if age < 3600 then return "ffd100" end
+  if age < 86400 then return "ff5555" end
+  return "808080"
 end
 
 local function SortRows(rows)
@@ -359,7 +368,7 @@ local function RefreshOnline()
       row.name:SetText(data.name)
       row.version:SetText("|cff" .. (data.versionColor or "999999") .. "v" .. tostring(data.version) .. "|r")
       row.status:SetText("|cff" .. data.color .. data.text .. "|r")
-      row.last:SetText(data.lastSync and Ago(data.lastSync) or "|cff666666-|r")
+      row.last:SetText(data.lastSync and ("|cff" .. SyncAgeColor(data.lastSync) .. Ago(data.lastSync) .. "|r") or "|cff808080-|r")
       row:Show()
     end
     for i = #rows + 1, #t.rows do t.rows[i]:Hide() end
@@ -543,7 +552,7 @@ local function Build()
       end
       local item = MenuItem(i)
       item.spec, item.option = spec, o
-      item.text:SetText(o.label .. "  |cff999999" .. n .. "|r")
+      item.text:SetText((o.color and ("|cff" .. o.color .. o.label .. "|r") or o.label) .. "  |cff999999" .. n .. "|r")
       item.check:SetShown(o.key == current)
       item:Show()
     end
