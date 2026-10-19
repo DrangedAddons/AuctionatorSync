@@ -1,8 +1,8 @@
 ## Interface: 16001
 ## Title: AuctionatorSync
-## Notes: Auctionator companion. Automatic price syncing between players, shared master price list, online sync status, and a Price List browser with categories, search and filters (/ah).
+## Notes: Auction house price sync between players with AuctionatorSync installed. New auction data is synced and shared automatically. Browse the auction house listings at any time (/ah).
 ## Author: Dranged
-## Version: 0.15.11
+## Version: 0.15.12
 ## Dependencies: Auctionator
 ## X-DrangedAddons-Games: _classic_beta_, _forever_
 ## SavedVariables: AuctionatorSyncDB

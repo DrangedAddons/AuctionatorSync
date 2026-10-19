@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.15.12
+- Shorter, to-the-point descriptions (AddOns list tooltip, Options > AddOns page, README, repository description).
+
 ## 0.15.11
 - Descriptions rewritten as feature lists (AddOns list tooltip, Options > AddOns page, README, repository description).
 

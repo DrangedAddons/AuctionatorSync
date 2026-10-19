@@ -68,16 +68,9 @@ local function SetupOptionsPage()
   text:SetPoint("RIGHT", panel, "RIGHT", -24, 0)
   text:SetJustifyH("LEFT")
   text:SetSpacing(3)
-  text:SetText("|cffffd100Price syncing|r\n"
-    .. "- Automatic price syncing between all players running AuctionatorSync\n"
-    .. "- Shared master price list: newest observed price per item\n"
-    .. "- Sync on login (host handshake) and after every Auctionator scan\n"
-    .. "- Hidden addon messages only; no chat output\n"
-    .. "- Online player table: version, sync status, last sync time\n\n"
-    .. "|cffffd100Price List|r\n"
-    .. "- Browse all synced prices away from the auction house\n"
-    .. "- Categories, search, sortable columns\n"
-    .. "- Filters: level range, usable, uncollected, rarity")
+  text:SetText("- Auction house price sync between players with AuctionatorSync installed.\n"
+    .. "- New auction data is synced and shared automatically.\n"
+    .. "- Browse the auction house listings at any time (/ah).")
 
   local settings = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
   settings:SetSize(170, 26)
