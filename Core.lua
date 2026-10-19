@@ -116,6 +116,7 @@ ns.On("ADDON_LOADED", function(name)
   end
   db.realms = db.realms or {}
   db.log = db.log or {}
+  db.names = db.names or {} -- the Price List's name book: [itemID] = { name, quality }
   db.settings.debug = nil -- replaced by verbose mode
   db.settings.guild, db.settings.friends, db.settings.bnet, db.settings.maxAgeDays = nil, nil, nil, nil -- everyone with the addon syncs
   ns.store = db
@@ -130,12 +131,14 @@ SlashCmdList.AUCTIONATORSYNC = function(msg)
     ns.CatchUp(true)
   elseif cmd == "status" then
     ns.PrintStatus()
+  elseif cmd == "prices" or cmd == "pricelist" then
+    ns.TogglePriceList()
   elseif cmd == "log" or cmd == "debug" then
     ns.ToggleLog()
   elseif cmd == "" then
     ns.ToggleWindow()
   else
     ns.Print("|cffffd100/async|r window · |cffffd100/async sync|r sync now · "
-      .. "|cffffd100/async status|r what's synced · |cffffd100/async log|r verbose log")
+      .. "|cffffd100/async status|r what's synced · |cffffd100/async prices|r price list · |cffffd100/async log|r verbose log")
   end
 end

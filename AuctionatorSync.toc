@@ -2,7 +2,7 @@
 ## Title: AuctionatorSync
 ## Notes: Shares Auctionator prices with everyone online who has AuctionatorSync, so you all see the same, newest prices.
 ## Author: Dranged
-## Version: 0.12.7
+## Version: 0.13.0
 ## Dependencies: Auctionator
 ## X-DrangedAddons-Games: _classic_beta_, _forever_
 ## SavedVariables: AuctionatorSyncDB
@@ -15,3 +15,4 @@ Comm.lua
 Sync.lua
 UI.lua
 Log.lua
+Prices.lua

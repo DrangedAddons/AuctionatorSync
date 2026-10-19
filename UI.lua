@@ -417,10 +417,8 @@ local function Refresh()
   RefreshPriceCheck()
   RefreshOnline()
 
-  local realm = ns.store.realms[ns.RealmKey() or ""]
-  local last = realm and realm.lastCatchUp or 0
-  frame.status:SetText(string.format("Realm: %s\nLast sync: %s", tostring(ns.RealmKey() or "?"),
-    last > 0 and date("%d %b %H:%M", last) or "never"))
+  local last = ns.LastSync and ns.LastSync() or 0
+  frame.status:SetText(string.format("Last sync\n%s", last > 0 and date("%d %b %H:%M", last) or "never"))
 end
 
 local function Build()
@@ -487,9 +485,15 @@ local function Build()
   logButton:SetText("Log")
   logButton:SetScript("OnClick", function() ns.ToggleLog() end)
 
+  local priceButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+  priceButton:SetSize(84, 24)
+  priceButton:SetPoint("RIGHT", logButton, "LEFT", -4, 0)
+  priceButton:SetText("Price List")
+  priceButton:SetScript("OnClick", function() ns.TogglePriceList() end)
+
   frame.status = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   frame.status:SetPoint("LEFT", sync, "RIGHT", 12, 0)
-  frame.status:SetPoint("RIGHT", logButton, "LEFT", -8, 0)
+  frame.status:SetPoint("RIGHT", priceButton, "LEFT", -8, 0)
   frame.status:SetJustifyH("LEFT")
 
   local itemButton = BuildPriceCheck(y - 50)

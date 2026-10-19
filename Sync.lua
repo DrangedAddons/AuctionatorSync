@@ -80,10 +80,26 @@ local function SeenAt(r, key, entry)
   return newest and (DayZero() + newest * 86400) or 0
 end
 
--- Auctionator keys: "12345" (item), "g:12345:..." (gear by item level), "p:..." (battle pet).
+-- Auctionator keys: "12345" (item), "g:12345:<item level>" (gear), "gr:12345:<suffix>" (older
+-- random-suffix gear, e.g. "of the Bear"), "p:..." (battle pet).
 function ns.ItemIDFromKey(key)
   key = tostring(key)
-  return tonumber(key:match("^(%d+)$") or key:match("^g:(%d+)"))
+  return tonumber(key:match("^(%d+)$") or key:match("^gr?:(%d+)"))
+end
+
+-- For the Price List: every priced item as { key, price, seen at, available that day }.
+function ns.PriceEntries()
+  local r, db = Realm(), DB()
+  local list = {}
+  if not r or not db or type(db.db) ~= "table" then return list end
+  for key, entry in pairs(db.db) do
+    if type(entry) == "table" and (entry.m or 0) > 0 then
+      local ts = SeenAt(r, tostring(key), entry)
+      local day = entry.a and tostring(floor((ts - DayZero()) / 86400))
+      list[#list + 1] = { tostring(key), entry.m, ts, day and entry.a[day] or nil }
+    end
+  end
+  return list
 end
 
 -- The latest price change (the "price check" item in /async). synced = came in through a sync.

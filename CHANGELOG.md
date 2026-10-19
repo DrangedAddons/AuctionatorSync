@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.0
+- **Price List:** browse the master list's prices anywhere, without being at the auction house. Open it with the new **Price List** button in `/async` (or `/async prices`).
+  - Laid out like the auction house: a category sidebar on the left (**All**, then each category with its item count; click one to show it, and its subcategories open underneath, click again to close them), a **search** box that filters by name as you type, and a list with **Price | Name | Available | Last seen** columns. Click a column to sort, again to reverse.
+  - Names in their quality colours, item icons, gear with its item level. Hover an item for its full tooltip (including Auctionator's price lines); Shift-click to link it in chat.
+  - Last seen is coloured: green this hour, yellow today, red this week, grey older. Available is the quantity the last scan saw that day.
+- **Item names always display properly.** A background warm-up after login quietly asks the game for each item's name and quality, and a saved name book keeps them for next time. If the window is opened before that's finished, it shows a "Loading item details... 1,240 / 1,284" bar instead of half-drawn rows; anything that never loads (an item removed from the game) is left out.
+- The text beside **Sync now** shows just the last sync time (the realm is still in `/async status`).
+
 ## 0.12.7
 - When there's no last-sync time to show for the host, the Last sync column says **host** (in green): the host holds the master list, so it's in sync by definition.
 - The log window opens to the left of the `/async` window (its top-right corner against the `/async` window's top-left) instead of underneath it. It can still be dragged anywhere.

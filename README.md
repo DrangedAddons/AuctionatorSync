@@ -24,6 +24,7 @@ A friend's price only replaces yours when it's newer. Everything travels as hidd
 - `/async` opens the window
 - `/async sync` syncs now
 - `/async status` prints the same overview in chat
+- `/async prices` opens the Price List: every price in the master list, by category, searchable and sortable, without being at the auction house
 - `/async log` opens the log (tick **Verbose mode** in `/async` to record every step, with player names)
 
 Untick **Show chat messages** in `/async` to hide the sign-in and sync messages. Replies to commands still show.
