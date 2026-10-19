@@ -68,11 +68,14 @@ local function SetupOptionsPage()
   text:SetPoint("RIGHT", panel, "RIGHT", -24, 0)
   text:SetJustifyH("LEFT")
   text:SetSpacing(3)
-  text:SetText("Shares Auctionator prices with everyone online who has AuctionatorSync, so you all see the same, newest prices.\n\n"
-    .. "When someone comes online they sync with a host who holds the master list, and when a scan finishes "
-    .. "its changed prices go to everyone. Everything travels as hidden addon data; nothing is posted in chat.\n\n"
-    .. "The Price List lets you browse every price in the master list, by category and with search, without "
-    .. "being at the auction house.")
+  text:SetText("Everyone running AuctionatorSync shares one master price list that always holds the newest "
+    .. "price anyone has seen.\n\n"
+    .. "|cffffd100Syncing:|r when you come online you handshake with a host from the players already in sync "
+    .. "and swap only the prices that differ; when a scan finishes, its changed prices go to everyone online. "
+    .. "It runs silently, as hidden addon data, never chat. The settings window shows everyone online with "
+    .. "their version, sync status and last sync time.\n\n"
+    .. "|cffffd100Price List:|r browse every price anywhere, without being at the auction house: categories, "
+    .. "search, filters (level, usable, uncollected, rarity) and sortable columns.")
 
   local settings = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
   settings:SetSize(170, 26)

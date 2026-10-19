@@ -1,8 +1,8 @@
 ## Interface: 16001
 ## Title: AuctionatorSync
-## Notes: Shares Auctionator prices with everyone online who has AuctionatorSync, so you all see the same, newest prices.
+## Notes: Keeps Auctionator prices in sync with everyone online who has AuctionatorSync (one shared, always-newest master list), and adds a searchable, filterable Price List (/ah) you can browse anywhere.
 ## Author: Dranged
-## Version: 0.15.9
+## Version: 0.15.10
 ## Dependencies: Auctionator
 ## X-DrangedAddons-Games: _classic_beta_, _forever_
 ## SavedVariables: AuctionatorSyncDB

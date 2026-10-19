@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.15.10
+- Updated descriptions to match what the addon does now (the AddOns list tooltip, the Options > AddOns page, the README and the repository description): the shared, always-newest master price list, silent syncing at login and after scans, and the Price List.
+
 ## 0.15.9
 - Shift-clicking a bag item into the Price List search no longer also opens the stack split box (Blizzard's or EllesmereUI's). When the Price List isn't the one taking the click, splitting works as normal.
 
