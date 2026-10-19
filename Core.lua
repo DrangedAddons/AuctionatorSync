@@ -6,17 +6,13 @@ local addonName, ns = ...
 local GetMeta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
 ns.VERSION = (GetMeta and GetMeta(addonName, "Version")) or "?"
 ns.PREFIX = "AucSync"
-ns.PROTOCOL = 2
+ns.PROTOCOL = 3
 
 -- Account-wide: the Auctionator price database these settings act on is account-wide too.
 local DEFAULTS = {
-  guild = true,          -- sync with guild members
-  friends = true,        -- sync with the in-game friends list
-  bnet = true,           -- sync with Battle.net friends playing on this realm
-  shareScans = true,     -- send my changed prices on the share timer
-  catchUpOnLogin = true, -- sync with whoever's online when I log in (the host compare)
+  shareScans = true,     -- send my changed prices when a scan finishes / the AH closes
+  catchUpOnLogin = true, -- handshake with the host when I log in
   announce = true,       -- automatic chat messages (sign-in, sync results)
-  maxAgeDays = 7,        -- syncs only carry prices seen in the last N days
   verbose = false,       -- verbose mode: record every step in the log window
 }
 
@@ -118,6 +114,7 @@ ns.On("ADDON_LOADED", function(name)
   db.realms = db.realms or {}
   db.log = db.log or {}
   db.settings.debug = nil -- replaced by verbose mode
+  db.settings.guild, db.settings.friends, db.settings.bnet, db.settings.maxAgeDays = nil, nil, nil, nil -- everyone with the addon syncs
   ns.store = db
   ns.db = db.settings
 end)

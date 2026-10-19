@@ -1,69 +1,91 @@
--- Transport: guild channel, whispers to friends-list friends, and Battle.net game data.
+-- Transport. Anyone running AuctionatorSync syncs, no restrictions. Messages are hidden addon
+-- data (never chat) and reach other players through every route the game allows:
+--   GUILD   - your guild
+--   CHANNEL - a hidden custom channel every AuctionatorSync user joins, so players outside your
+--             guild and friends list are found too (removed from your chat windows)
+--   WHISPER - one player by name (direct replies, and in-game friends at login)
+--   BN      - Battle.net friends in this game
 -- Every logical message is an encoded table split into chunks "<id>:<part>:<total>:<data>".
+-- A message arriving twice (e.g. guild AND channel) is only handled once.
 local _, ns = ...
 
 local CTL = ChatThrottleLib
 local CHUNK_ADDON = 240   -- addon messages are capped at 255 bytes
 local CHUNK_BNET = 4000   -- BNSendGameData allows ~4KB
 local REASSEMBLY_TIMEOUT = 300
+local CHANNEL_NAME = "AuctionatorSyncData"
 
-ns.peers = {}     -- short name -> { name, via = "guild"|"friend"|"bnet", bnID, version, lastSeen }
-local guildSet, friendSet = {}, {}
+ns.peers = {} -- short name -> { name, version, proto, routes = {}, bnID, lastSeen, st, d, os, host }
 
 ----------------------------------------------------------------------------------------------
--- Who we trust: guild members, friends-list friends, Battle.net friends on this realm.
+-- The hidden channel
 
--- guildSet[short] = true while that member is online, false while offline
-function ns.RefreshRosters()
-  wipe(guildSet)
-  if IsInGuild() and GetNumGuildMembers then
-    for i = 1, GetNumGuildMembers() do
-      local name, _, _, _, _, _, _, _, online = GetGuildRosterInfo(i)
-      if name then guildSet[ns.ShortName(name)] = online and true or false end
-    end
+ns.channelId = nil
+
+local function HideChannel()
+  for i = 1, NUM_CHAT_WINDOWS or 10 do
+    local frame = _G["ChatFrame" .. i]
+    if frame and ChatFrame_RemoveChannel then pcall(ChatFrame_RemoveChannel, frame, CHANNEL_NAME) end
   end
-  wipe(friendSet)
+end
+
+function ns.JoinChannel()
+  local id = GetChannelName(CHANNEL_NAME)
+  if not id or id == 0 then
+    if JoinTemporaryChannel then pcall(JoinTemporaryChannel, CHANNEL_NAME) end
+    id = GetChannelName(CHANNEL_NAME)
+  end
+  if id and id > 0 then
+    if ns.channelId ~= id then ns.Log("joined the hidden AuctionatorSync channel (#%d)", id) end
+    ns.channelId = id
+    HideChannel()
+  else
+    ns.channelId = nil
+    ns.Log("couldn't join the hidden channel: syncing with guild, friends and Battle.net only")
+  end
+end
+
+-- Keep "joined channel" / "left channel" notices for our channel out of chat.
+if ChatFrame_AddMessageEventFilter then
+  -- the channel name sits at different argument positions for these events: check them all
+  local function Filter(_, _, ...)
+    for i = 1, select("#", ...) do
+      local v = select(i, ...)
+      if type(v) == "string" and v:find(CHANNEL_NAME, 1, true) then return true end
+    end
+    return false
+  end
+  for _, event in ipairs({ "CHAT_MSG_CHANNEL_NOTICE", "CHAT_MSG_CHANNEL_NOTICE_USER",
+    "CHAT_MSG_CHANNEL_JOIN", "CHAT_MSG_CHANNEL_LEAVE" }) do
+    ChatFrame_AddMessageEventFilter(event, Filter)
+  end
+end
+
+----------------------------------------------------------------------------------------------
+-- Friends (only used to find people at login; anyone with the addon is welcome)
+
+local function OnlineFriends()
+  local list = {}
   if C_FriendList and C_FriendList.GetNumFriends then
     for i = 1, C_FriendList.GetNumFriends() do
       local info = C_FriendList.GetFriendInfoByIndex(i)
-      if info and info.name then friendSet[ns.ShortName(info.name)] = info end
+      if info and info.name and info.connected then list[#list + 1] = info.name end
     end
   end
+  return list
 end
 
-function ns.IsGuildMember(name) return guildSet[ns.ShortName(name)] ~= nil end
-function ns.IsFriend(name) return friendSet[ns.ShortName(name)] ~= nil end
-
--- Is a peer we've heard from this session still online?
-function ns.IsPeerOnline(peer)
-  -- just heard from them: online, even if the guild roster hasn't caught up yet
-  if peer.lastSeen and ns.Now() - peer.lastSeen < 120 then return true end
-  local short = ns.ShortName(peer.name)
-  if guildSet[short] then return true end
-  local f = friendSet[short]
-  if f and f.connected then return true end
-  if peer.via == "bnet" then
-    for _, b in ipairs(ns.BNetFriendsHere()) do
-      if ns.ShortName(b.name) == short then return true end
-    end
-  end
-  return false
-end
-
--- Online Battle.net friends in this game, on this realm: { {id, name}, ... }
-function ns.BNetFriendsHere()
+-- Online Battle.net friends playing this game: { {id, name}, ... }
+local function BNetFriends()
   local list = {}
   if not (BNGetNumFriends and C_BattleNet and C_BattleNet.GetFriendAccountInfo) then return list end
-  local realm = GetRealmName()
   local _, numOnline = BNGetNumFriends()
   for i = 1, numOnline or 0 do
     local acc = C_BattleNet.GetFriendAccountInfo(i)
     local g = acc and acc.gameAccountInfo
     if g and g.isOnline and g.gameAccountID and g.characterName
-      and (not BNET_CLIENT_WOW or g.clientProgram == BNET_CLIENT_WOW)
-      and (not WOW_PROJECT_ID or not g.wowProjectID or g.wowProjectID == WOW_PROJECT_ID)
-      and (not g.realmName or g.realmName == realm) then
-      table.insert(list, { id = g.gameAccountID, name = g.characterName })
+      and (not BNET_CLIENT_WOW or g.clientProgram == BNET_CLIENT_WOW) then
+      list[#list + 1] = { id = g.gameAccountID, name = g.characterName }
     end
   end
   return list
@@ -74,6 +96,8 @@ local function BNetNameFor(id)
   return info and info.characterName
 end
 
+function ns.RefreshRosters() end -- kept for older callers; nothing to cache any more
+
 ----------------------------------------------------------------------------------------------
 -- Sending
 
@@ -83,8 +107,14 @@ local function NextId()
   return string.format("%x%x", math.random(0, 255), msgCounter)
 end
 
--- target = { kind = "GUILD" } | { kind = "WHISPER", name = "Bob" } | { kind = "BN", id = 123 }
-function ns.Send(target, msg, prio)
+local function RouteName(target)
+  if target.kind == "GUILD" then return "guild" end
+  if target.kind == "CHANNEL" then return "channel" end
+  return (target.name or tostring(target.id)) .. (target.kind == "BN" and " (Battle.net)" or "")
+end
+
+-- target = { kind = "GUILD" | "CHANNEL" } | { kind = "WHISPER", name } | { kind = "BN", id, name }
+function ns.Send(target, msg, prio, id)
   if not target then return end
   msg.v = ns.VERSION
   msg.p = ns.PROTOCOL
@@ -93,7 +123,7 @@ function ns.Send(target, msg, prio)
   if not text then return end
   local size = target.kind == "BN" and CHUNK_BNET or CHUNK_ADDON
   local total = math.ceil(#text / size)
-  local id = NextId()
+  id = id or NextId()
   prio = prio or "NORMAL"
   for i = 1, total do
     local chunk = id .. ":" .. i .. ":" .. total .. ":" .. text:sub((i - 1) * size + 1, i * size)
@@ -101,80 +131,81 @@ function ns.Send(target, msg, prio)
       CTL:BNSendGameData(prio, ns.PREFIX, chunk, "WHISPER", target.id, "AucSync" .. target.id)
     elseif target.kind == "WHISPER" then
       CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "WHISPER", target.name, "AucSync" .. target.name)
+    elseif target.kind == "CHANNEL" then
+      CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "CHANNEL", tostring(target.channel), "AucSyncChannel")
     else
       CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "GUILD", nil, "AucSyncGuild")
     end
   end
-  local what = msg.t == "DATA" and string.format("%s (%d price%s%s)", msg.k and ("DATA " .. msg.k) or "DATA",
-    type(msg.e) == "table" and #msg.e / 4 or 0, (type(msg.e) == "table" and #msg.e == 4) and "" or "s",
-    msg.fin and ", last batch" or "") or msg.t
-  ns.Log("|cff66ccff>>|r %s to %s%s", what,
-    target.kind == "GUILD" and "guild" or (target.name or tostring(target.id)) .. (target.kind == "BN" and " (Battle.net)" or ""),
-    total > 1 and string.format(" in %d parts", total) or "")
+  return id
 end
 
--- Everyone we might reach, for HELLO (we don't know yet who has the addon).
-function ns.AllTargets()
-  local list, seen = {}, {}
-  if ns.db.guild and IsInGuild() then
-    table.insert(list, { kind = "GUILD" })
+-- To everyone online with the addon: guild + channel, plus Battle.net/whisper for players we
+-- only reach that way. With discover = true (login), also every online friend and Battle.net
+-- friend, since we don't know yet who has the addon. The same id goes on every route, so a
+-- player reached twice only handles it once.
+function ns.Broadcast(msg, prio, discover)
+  local id = NextId()
+  local covered = {}
+  local routes = {}
+  if IsInGuild() then
+    ns.Send({ kind = "GUILD" }, msg, prio, id)
+    routes[#routes + 1] = "guild"
   end
-  if ns.db.friends then
-    for short, info in pairs(friendSet) do
-      if info.connected and not (ns.db.guild and guildSet[short]) then
-        seen[short] = true
-        table.insert(list, { kind = "WHISPER", name = info.name })
-      end
-    end
+  if ns.channelId then
+    ns.Send({ kind = "CHANNEL", channel = ns.channelId }, msg, prio, id)
+    routes[#routes + 1] = "channel"
   end
-  if ns.db.bnet then
-    for _, f in ipairs(ns.BNetFriendsHere()) do
-      local short = ns.ShortName(f.name)
-      if not seen[short] and not (ns.db.guild and guildSet[short]) then
-        table.insert(list, { kind = "BN", id = f.id, name = f.name })
-      end
-    end
+  for short, peer in pairs(ns.peers) do
+    if peer.routes.guild or peer.routes.channel then covered[short] = true end
   end
-  return list
+  local direct = 0
+  local function Direct(target, short)
+    if covered[short] or ns.IsMe(target.name) then return end
+    covered[short] = true
+    ns.Send(target, msg, prio, id)
+    direct = direct + 1
+  end
+  for short, peer in pairs(ns.peers) do
+    if ns.IsPeerOnline(peer) then Direct(ns.ReplyTarget(peer), short) end
+  end
+  if discover then
+    for _, name in ipairs(OnlineFriends()) do Direct({ kind = "WHISPER", name = name }, ns.ShortName(name)) end
+    for _, f in ipairs(BNetFriends()) do Direct({ kind = "BN", id = f.id, name = f.name }, ns.ShortName(f.name)) end
+  end
+  if direct > 0 then routes[#routes + 1] = ns.Plural(direct, "player") .. " directly" end
+  return table.concat(routes, ", ")
 end
 
--- Peers known to run AuctionatorSync: one guild message covers every guild peer.
-function ns.PeerTargets()
-  local list, guildDone = {}, false
-  for _, peer in pairs(ns.peers) do
-    if peer.otherRealm or not ns.IsPeerOnline(peer) then
-      -- logged off since (a whisper would print "No player named ..."), or not on our AH
-    elseif peer.via == "guild" then
-      if not guildDone and ns.db.guild and IsInGuild() then
-        guildDone = true
-        table.insert(list, { kind = "GUILD" })
-      end
-    elseif peer.via == "bnet" then
-      if ns.db.bnet and peer.bnID then table.insert(list, { kind = "BN", id = peer.bnID, name = peer.name }) end
-    elseif ns.db.friends then
-      table.insert(list, { kind = "WHISPER", name = peer.name })
-    end
-  end
-  return list
-end
-
--- Where to answer a peer directly.
+-- Where to answer one player directly.
 function ns.ReplyTarget(peer)
-  if peer.via == "bnet" and peer.bnID then return { kind = "BN", id = peer.bnID, name = peer.name } end
+  if peer.bnID and not peer.routes.whisper and not peer.routes.guild and not peer.routes.channel then
+    return { kind = "BN", id = peer.bnID, name = peer.name }
+  end
   return { kind = "WHISPER", name = peer.name }
+end
+
+----------------------------------------------------------------------------------------------
+-- Who's online
+
+local OFFLINE_AFTER = 200 -- seconds without a heartbeat
+
+function ns.IsPeerOnline(peer)
+  return peer.lastSeen ~= nil and ns.Now() - peer.lastSeen < OFFLINE_AFTER and not peer.gone
 end
 
 ----------------------------------------------------------------------------------------------
 -- Receiving
 
 local buffers = {}
+local handled = {} -- sender/id -> time, so a message arriving by two routes is handled once
 
 local function Reassemble(key, text)
   local id, part, total, data = text:match("^(%x+):(%d+):(%d+):(.*)$")
   part, total = tonumber(part), tonumber(total)
   if not id or not part or not total or total < 1 or part > total then return nil end
-  if total == 1 then return data end
   local bkey = key .. "/" .. id
+  if handled[bkey] then return nil end
   local buf = buffers[bkey]
   if not buf then
     buf = { total = total, got = 0, parts = {}, time = GetTime() }
@@ -187,6 +218,7 @@ local function Reassemble(key, text)
   buf.time = GetTime()
   if buf.got < buf.total then return nil end
   buffers[bkey] = nil
+  handled[bkey] = GetTime()
   return table.concat(buf.parts)
 end
 
@@ -195,65 +227,46 @@ C_Timer.NewTicker(60, function()
   for k, buf in pairs(buffers) do
     if now - buf.time > REASSEMBLY_TIMEOUT then buffers[k] = nil end
   end
+  for k, t in pairs(handled) do
+    if now - t > REASSEMBLY_TIMEOUT then handled[k] = nil end
+  end
 end)
 
-local function Deliver(peerKey, text, peerInfo)
-  local whole = Reassemble(peerKey, text)
+local function Deliver(name, route, text, bnID)
+  if not name or ns.IsMe(name) then return end
+  local short = ns.ShortName(name)
+  local whole = Reassemble(short, text)
   if not whole then return end
   local msg = ns.Decode(whole)
-  if not msg or type(msg.t) ~= "string" then return end
-  if msg.sid == ns.SESSION or ns.IsMe(peerInfo.name) then return end -- our own message
-  if msg.t ~= "DATA" then
-    ns.Log("|cff99ff99<<|r %s from %s (%s, v%s)", msg.t, peerInfo.name, peerInfo.via, tostring(msg.v))
-  end
-  local peer = ns.peers[peerKey]
+  if not msg or type(msg.t) ~= "string" or msg.sid == ns.SESSION then return end
+  local peer = ns.peers[short]
   if not peer then
-    peer = { name = peerInfo.name }
-    ns.peers[peerKey] = peer
+    peer = { name = name, routes = {} }
+    ns.peers[short] = peer
   end
-  peer.via, peer.bnID, peer.name = peerInfo.via, peerInfo.bnID, peerInfo.name
-  peer.version, peer.lastSeen = msg.v, ns.Now()
+  peer.name = name
+  peer.routes[route] = true
+  if bnID then peer.bnID = bnID end
+  peer.version, peer.proto, peer.lastSeen, peer.gone = msg.v, tonumber(msg.p) or 1, ns.Now(), nil
   ns.OnMessage(msg, peer)
 end
 
 ns.On("CHAT_MSG_ADDON", function(prefix, text, channel, sender)
   if prefix ~= ns.PREFIX or not sender then return end
-  if ns.IsMe(sender) then return end
-  local short = ns.ShortName(sender)
-  local via
-  if channel == "GUILD" then
-    if not ns.db.guild then return end
-    via = "guild"
-  elseif channel == "WHISPER" then
-    if ns.db.guild and ns.IsGuildMember(sender) then
-      via = "guild"
-    elseif ns.db.friends and ns.IsFriend(sender) then
-      via = "friend"
-    else
-      ns.Log("ignored a message from %s: not in your guild or friends list", sender)
-      return -- not someone we sync with
-    end
-  else
-    return
-  end
-  Deliver(short, text, { name = Ambiguate and Ambiguate(sender, "none") or sender, via = via })
+  local route = (channel == "GUILD" and "guild") or (channel == "WHISPER" and "whisper")
+    or (channel == "CHANNEL" and "channel")
+  if not route then return end
+  Deliver(Ambiguate and Ambiguate(sender, "none") or sender, route, text)
 end)
 
 ns.On("BN_CHAT_MSG_ADDON", function(prefix, text, _, senderID)
-  if prefix ~= ns.PREFIX or not ns.db.bnet or not senderID then return end
-  local name = BNetNameFor(senderID)
-  if not name or ns.IsMe(name) then return end
-  Deliver(ns.ShortName(name), text, { name = name, via = "bnet", bnID = senderID })
+  if prefix ~= ns.PREFIX or not senderID then return end
+  Deliver(BNetNameFor(senderID), "bnet", text, senderID)
 end)
 
 ns.On("PLAYER_LOGIN", function()
   if C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix then
     C_ChatInfo.RegisterAddonMessagePrefix(ns.PREFIX)
   end
-  if C_GuildInfo and C_GuildInfo.GuildRoster then C_GuildInfo.GuildRoster() end
   if C_FriendList and C_FriendList.ShowFriends then C_FriendList.ShowFriends() end
-  ns.RefreshRosters()
 end)
-
-ns.On("GUILD_ROSTER_UPDATE", ns.RefreshRosters)
-ns.On("FRIENDLIST_UPDATE", ns.RefreshRosters)

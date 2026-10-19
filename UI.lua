@@ -4,11 +4,10 @@ local _, ns = ...
 local frame
 
 local OPTIONS = {
-  { key = "guild", label = "Sync with my guild" },
-  { key = "friends", label = "Sync with my friends list" },
-  { key = "bnet", label = "Sync with Battle.net friends on this realm" },
-  { key = "shareScans", label = "Share my scans automatically" },
-  { key = "catchUpOnLogin", label = "Sync with friends online when I log in" },
+  { key = "shareScans", label = "Share my scans with everyone online",
+    tip = "When an Auctionator scan finishes, or you close the auction house after searching, the prices that changed go to everyone online with AuctionatorSync." },
+  { key = "catchUpOnLogin", label = "Sync when I log in",
+    tip = "Handshake with the host (whoever holds the master list) when you come online, so you start with the newest prices." },
   { key = "announce", label = "Show chat messages",
     tip = "Sign-in and sync messages in chat. Replies to /async commands and Sync now always show." },
   { key = "verbose", label = "Verbose mode",
@@ -160,69 +159,42 @@ local function BuildPriceCheck(y)
 end
 
 ----------------------------------------------------------------------------------------------
--- Online list: everyone online with AuctionatorSync (you included), grouped by version.
--- Collapsed it's one line of counts; click the header to see the names.
-
--- "0.10.2" > "0.9.0": compare number by number
-local function NewerVersion(a, b)
-  local pa, pb = {}, {}
-  for n in tostring(a):gmatch("%d+") do pa[#pa + 1] = tonumber(n) end
-  for n in tostring(b):gmatch("%d+") do pb[#pb + 1] = tonumber(n) end
-  for i = 1, math.max(#pa, #pb) do
-    local x, y = pa[i] or 0, pb[i] or 0
-    if x ~= y then return x > y end
-  end
-  return false
-end
-
--- versions (newest first), groups[version] = sorted names ("You" first), total count
-function ns.OnlineGroups()
-  local groups, versions, count = {}, {}, 1
-  local function Add(version, name)
-    version = tostring(version or "?")
-    if not groups[version] then
-      groups[version] = {}
-      versions[#versions + 1] = version
-    end
-    table.insert(groups[version], name)
-  end
-  Add(ns.VERSION, "You")
-  for _, peer in pairs(ns.peers) do
-    if not peer.otherRealm and ns.IsPeerOnline(peer) then
-      Add(peer.version, peer.name)
-      count = count + 1
-    end
-  end
-  table.sort(versions, NewerVersion)
-  for _, names in pairs(groups) do
-    table.sort(names, function(a, b)
-      if a == "You" or b == "You" then return a == "You" end
-      return a < b
-    end)
-  end
-  return versions, groups, count
-end
+-- Online list: everyone online with AuctionatorSync (you included): name, version, and where
+-- they stand against the master list. The host (who holds the master list and hands it to
+-- newcomers) is first, marked with a star. Click the header to fold it to one summary line.
+--   in sync           same fingerprint as the host: the same master list
+--   handshaking with  getting the master list right now
+--   waiting to sync   online, handshake not started yet
+--   not in sync yet   different prices (a fresh scan going out, or about to re-sync)
+--   needs update      an older AuctionatorSync that can't sync with this one
 
 local function RefreshOnline()
-  local versions, groups, count = ns.OnlineGroups()
-  local newest = versions[1]
-
-  local expanded = ns.db.onlineExpanded
-  frame.onlineHeader.text:SetText(string.format("%s Online with AuctionatorSync (%d)",
-    expanded and "|cffffd100-|r" or "|cffffd100+|r", count))
-
-  local parts = {}
-  for _, v in ipairs(versions) do
-    local colour = (v == newest) and "|cff33ff99" or "|cffff9966"
-    local names = groups[v]
-    if expanded then
-      parts[#parts + 1] = string.format("%sv%s|r |cff999999(%d%s)|r  %s", colour, v, #names,
-        v == newest and "" or ", older", table.concat(names, ", "))
-    else
-      parts[#parts + 1] = string.format("%sv%s|r ×%d", colour, v, #names)
-    end
+  local rows = ns.StatusRows()
+  local expanded = ns.db.onlineExpanded ~= false
+  local inSync = 0
+  for _, row in ipairs(rows) do
+    if row.text == "in sync" then inSync = inSync + 1 end
   end
-  frame.peers:SetText(table.concat(parts, expanded and "\n" or "   "))
+  frame.onlineHeader.text:SetText(string.format("%s Online with AuctionatorSync (%d) |cff999999- %d in sync|r",
+    expanded and "|cffffd100-|r" or "|cffffd100+|r", #rows, inSync))
+
+  local lines = {}
+  if expanded then
+    for _, row in ipairs(rows) do
+      lines[#lines + 1] = string.format("%s%s  |cff999999v%s|r  |cff%s%s%s|r",
+        row.host and "|cffffd100*|r " or "   ", row.name, tostring(row.version), row.color,
+        row.host and "host - " or "", row.text)
+    end
+  else
+    local counts, order = {}, {}
+    for _, row in ipairs(rows) do
+      local key = "|cff" .. row.color .. row.text:gsub(" with .*$", "") .. "|r"
+      if not counts[key] then counts[key] = 0; order[#order + 1] = key end
+      counts[key] = counts[key] + 1
+    end
+    for _, key in ipairs(order) do lines[#lines + 1] = counts[key] .. " " .. key end
+  end
+  frame.peers:SetText(table.concat(lines, expanded and "\n" or "   "))
 
   -- grow or shrink the window to fit the list
   local top, listTop = frame:GetTop(), frame.peers:GetTop()
@@ -323,13 +295,17 @@ local function Build()
   header.text = header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   header.text:SetPoint("LEFT")
   header:SetScript("OnClick", function()
-    ns.db.onlineExpanded = not ns.db.onlineExpanded
+    ns.db.onlineExpanded = ns.db.onlineExpanded == false
     Refresh()
   end)
   header:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-    GameTooltip:SetText(ns.db.onlineExpanded and "Click to hide names" or "Click to show names")
-    GameTooltip:AddLine("Orange versions are older than the newest one online.", 1, 1, 1, true)
+    GameTooltip:SetText(ns.db.onlineExpanded == false and "Click to show everyone" or "Click to fold to a summary")
+    GameTooltip:AddLine("* host: holds the master list and hands it to whoever comes online.", 1, 1, 1, true)
+    GameTooltip:AddLine("|cff33ff99in sync|r: the same master list as the host.", 1, 1, 1, true)
+    GameTooltip:AddLine("|cffffd100handshaking / waiting to sync|r: getting the master list.", 1, 1, 1, true)
+    GameTooltip:AddLine("|cffff9966not in sync yet|r: different prices for now (a fresh scan going out, or re-syncing within 2 minutes).", 1, 1, 1, true)
+    GameTooltip:AddLine("|cffff5555needs update|r: an older AuctionatorSync that can't sync with this one.", 1, 1, 1, true)
     GameTooltip:Show()
   end)
   header:SetScript("OnLeave", GameTooltip_Hide)

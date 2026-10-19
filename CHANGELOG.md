@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11.0
+**Sync redone around a master list.** Everyone needs 0.11.0; older versions show as "needs update" and can't sync.
+- **Everyone with AuctionatorSync syncs.** The guild / friends list / Battle.net options are gone: players are found through your guild, friends list, Battle.net friends and a hidden AuctionatorSync channel (kept out of your chat windows), and nobody is filtered out. Before, a whisper from a friend was ignored unless *you* also had *them* on your friends list, which is why friends and Battle.net friends often never synced.
+- **A fingerprint of everyone's prices.** Each player's price list has a fingerprint (256 section sums). Equal fingerprints mean the same master list, so "in sync" is something the addon knows, not a guess.
+- **Two triggers:**
+  1. Someone comes online: they handshake with the host (picked automatically from players already in sync, online longest). Only the sections whose fingerprints differ are exchanged, so logging in when nothing changed sends almost nothing. The host merges the newest prices into the master list, sends the newcomer what it was missing, and shares what the newcomer brought with everyone else.
+  2. Your Auctionator prices change: when a full scan finishes, or you close the auction house after searching, the changed prices go to everyone online. This replaces the 1-minute share timer.
+- **Safety net:** if your prices differ from the host's for 2 minutes (say two people logged in at once), you quietly handshake with the host again.
+- **Online list redone:** everyone online, you included, with their version and status: **in sync**, **handshaking with ...**, **waiting to sync**, **not in sync yet** or **needs update**. The host is first, marked with a star and "host". The header shows how many are in sync; click it to fold the list into one summary line.
+- **Detailed log (Verbose mode), with player names:** who came online or went offline, who is handshaking with whom, which sections differed, how many prices were sent and received, "new master list generated", "master list ready: sharing ... with N other players", who is now in sync, scans starting and finishing, and what your scans shared.
+- Same-time ties (two different prices seen in the same second) go to the lower price on every player, so everyone ends up identical.
+- `/async status` prints the same overview: your fingerprint and every player's status.
+- All prices count now; the 7-day limit on synced prices is gone.
+
 ## 0.10.1
 - The realm and last-sync text in `/async` no longer runs under the new Log button.
 

@@ -1,25 +1,42 @@
--- The sync itself.
+-- The sync itself (protocol 3).
 --
 -- Auctionator keeps, per item, the last seen price (m) and per-day history (h/l/a), but not
 -- *when* during the day a price was seen. AuctionatorSync keeps its own timestamp per item:
 --   ts[key] = when this price was last seen (by me or a friend) - the newer one always wins
--- A newer sighting of the same price only moves the timestamp; nothing in Auctionator changes.
 --
--- Messages (all hidden addon data; all carry r = Auctionator's realm key, so other
--- realms/factions are ignored, and sid, a random per-login ID, so our own echoes are dropped):
---   HELLO {j?}       "I'm here" (j: and I'm joining, please answer)
---   PONG  {os, rd}   answer: when I came online, and whether I've finished my own join
---   DATA  {x, e, b, k?, fin?}  one batch of transfer x: e = {key, price, available, ts - b, ...};
---                    k = "join" (newcomer -> host), "reply" (host -> newcomer), nil = live update
--- How a join works is described above ns.CatchUp below.
+-- The master list: everyone's prices merged, newest per item. Each player has a fingerprint of
+-- their whole price list (256 section sums of item+price hashes); equal fingerprints = the same
+-- master list. That's what the online list's "In sync" means.
+--
+-- Two things start a sync:
+--   1. Someone comes online: they handshake with a host, picked automatically from the players
+--      already in sync (online longest). They compare the 256 section fingerprints and swap
+--      prices only for the sections that differ; the host merges (newest wins) into the new
+--      master list, sends the newcomer what it was missing, and shares what the newcomer brought
+--      with everyone else.
+--   2. Your Auctionator prices change (a full scan finishes, or you close the auction house
+--      after searching): your changed prices go to everyone online.
+-- Safety net: if your fingerprint differs from the host's for 2 minutes (e.g. two people logged
+-- in at once), you quietly handshake with the host again.
+--
+-- Messages (hidden addon data; all carry r = Auctionator's realm key and sid, a per-login ID):
+--   HELLO {st, d, os}   I'm here (state, fingerprint, online since)  -> everyone; answered by STATE
+--   STATE {st, d, os, w} my state (+ w: who I'm syncing with); also a heartbeat every minute
+--   SUM   {b}           newcomer -> host: my 256 section sums
+--   NEED  {bk}          host -> newcomer: the sections that differ (empty = already in sync)
+--   DATA  {x, e, b, k?, fin?}  prices, e = {key, price, available, ts - b, ...};
+--                       k = "join" (newcomer -> host), "reply" (host -> newcomer),
+--                           "fwd" (host -> everyone: what a newcomer brought), nil = scan changes
 local _, ns = ...
 
 local BATCH = 1500          -- prices per DATA message
--- Changes are collected and sent as one update every SHARE_INTERVAL seconds.
--- 60 while testing; set back to 300 (5 minutes) for the live release.
-local SHARE_INTERVAL = 60
-local PONG_WAIT = 5         -- seconds to collect answers to a HELLO
+local HELLO_WAIT = 5        -- seconds to collect answers to a HELLO
+local JOIN_TIMEOUT = 180    -- seconds without hearing from the host before trying again
+local HEARTBEAT = 60        -- seconds between STATE heartbeats
+local HEAL_AFTER = 120      -- seconds out of sync with the host before re-syncing
+local SECTIONS = 256
 local TS_KEEP_DAYS = 60
+local TWO32 = 4294967296
 
 local floor = math.floor
 
@@ -39,10 +56,9 @@ local function Realm()
   if not key then return nil end
   local r = ns.store.realms[key]
   if not r then
-    r = { ts = {}, unsent = {}, lastCatchUp = 0 }
+    r = { ts = {}, lastCatchUp = 0 }
     ns.store.realms[key] = r
   end
-  r.unsent = r.unsent or {}
   return r
 end
 
@@ -70,9 +86,7 @@ function ns.ItemIDFromKey(key)
   return tonumber(key:match("^(%d+)$") or key:match("^g:(%d+)"))
 end
 
--- The latest price change (shown as the "price check" item in /async). Only real items, so
--- it can be shown with an icon and tooltip. synced = true when it came in through a sync,
--- nil for your own scan (no names: it just came from AuctionatorSync).
+-- The latest price change (the "price check" item in /async). synced = came in through a sync.
 local function NoteChange(r, key, price, was, synced)
   if not ns.ItemIDFromKey(key) then return end
   local c = r.lastChange or {}
@@ -87,53 +101,63 @@ function ns.LastChange()
 end
 
 ----------------------------------------------------------------------------------------------
--- Watching Auctionator's own scans
+-- Fingerprint: 256 sections, each the sum (mod 2^32) of hash(item, price) for its items.
 
--- What each item's price was before the current scan touched it. The hook runs after
--- Auctionator's SetPrice has already overwritten m, so we keep our own copy (memory only).
+local sections, itemCount = {}, 0
+for i = 0, SECTIONS - 1 do sections[i] = 0 end
+
+local function Hash(s)
+  local h = 5381
+  for i = 1, #s do h = (h * 33 + s:byte(i)) % TWO32 end
+  return h
+end
+
+local function SectionOf(key) return Hash(key) % SECTIONS end
+
+local function Track(key, oldPrice, newPrice)
+  local s = SectionOf(key)
+  if oldPrice and oldPrice > 0 then
+    sections[s] = (sections[s] - Hash(key .. ":" .. oldPrice)) % TWO32
+    itemCount = itemCount - 1
+  end
+  if newPrice and newPrice > 0 then
+    sections[s] = (sections[s] + Hash(key .. ":" .. newPrice)) % TWO32
+    itemCount = itemCount + 1
+  end
+end
+
+function ns.Fingerprint()
+  local total = 0
+  for i = 0, SECTIONS - 1 do total = (total + sections[i]) % TWO32 end
+  return string.format("%08x-%d", total, itemCount)
+end
+
+local function RebuildFingerprint(data)
+  for i = 0, SECTIONS - 1 do sections[i] = 0 end
+  itemCount = 0
+  for key, entry in pairs(data) do
+    if type(entry) == "table" then Track(tostring(key), nil, entry.m) end
+  end
+end
+
+----------------------------------------------------------------------------------------------
+-- Watching Auctionator: prices you scan or search
+
+-- What each item's price was before Auctionator's SetPrice overwrote it (the hook runs after).
 local known = {}
 local hookedDB
-
--- Live sharing while friends are online: r.unsent[key] = the price at the last update we sent
--- (0 if none), sent to everyone online every SHARE_INTERVAL. Changes made while nobody is online
--- wait here, and go into the next join compare (which then clears the queue).
-function ns.FlushShared()
-  local r, db = Realm(), DB()
-  if not r or not db or type(db.db) ~= "table" or not next(r.unsent) then return end
-  if not ns.db.shareScans then wipe(r.unsent); return end
-  local targets = ns.PeerTargets()
-  if #targets == 0 then -- nobody online: keep the queue for later
-    local n = 0
-    for _ in pairs(r.unsent) do n = n + 1 end
-    ns.Log("nobody online: %s kept for later", ns.Plural(n, "changed price"))
-    return
-  end
-  local list = {}
-  local oldest = ns.Now() - ns.db.maxAgeDays * 86400
-  for key, before in pairs(r.unsent) do
-    local entry = db.db[key]
-    local ts = r.ts[key] or 0
-    -- skip it if it went back to the price we last sent, or is too old to be worth sending
-    if type(entry) == "table" and (entry.m or 0) > 0 and entry.m ~= before and ts > oldest then
-      local day = entry.a and tostring(math.floor((ts - DayZero()) / 86400))
-      list[#list + 1] = { key, entry.m, day and entry.a[day] or 0, ts }
-    end
-  end
-  wipe(r.unsent)
-  if #list == 0 then return end
-  ns.SendEntries(targets, list, "NORMAL")
-  ns.Log("shared %s from your scans with everyone online", ns.Plural(#list, "changed price"))
-end
+local pending = {} -- key -> price before your latest scan/search changed it (to share)
 
 local function OnLocalPrice(key, price, available)
   local r = Realm()
   if not r or not key or not price then return end
   key = tostring(key)
-  local now = ns.Now()
-  r.ts[key] = now
-  if known[key] == price then return end -- same price as before: seen again, nothing to send
-  if r.unsent[key] == nil then r.unsent[key] = known[key] or 0 end
-  NoteChange(r, key, price, known[key], nil)
+  r.ts[key] = ns.Now()
+  local before = known[key]
+  if before == price then return end -- same price seen again: nothing changed
+  if pending[key] == nil then pending[key] = before or 0 end
+  Track(key, before, price)
+  NoteChange(r, key, price, before, nil)
   known[key] = price
 end
 
@@ -147,20 +171,23 @@ function ns.HookAuctionator()
     for key, entry in pairs(db.db) do
       if type(entry) == "table" then known[key] = entry.m end
     end
+    RebuildFingerprint(db.db)
   end
   hooksecurefunc(db, "SetPrice", function(self, key, price, available)
     if self == hookedDB then OnLocalPrice(key, price, available) end
   end)
-  ns.Log("watching Auctionator's prices for %s", tostring(ns.RealmKey()))
+  ns.Log("watching Auctionator's prices for %s: %s, fingerprint %s",
+    tostring(ns.RealmKey()), ns.Plural(itemCount, "price"), ns.Fingerprint())
 end
 
 ----------------------------------------------------------------------------------------------
--- Writing friends' prices into Auctionator
+-- Writing prices into Auctionator
 
--- Returns "changed" (newer and a different price: written), "same" (newer, same price: only
--- our timestamp moves), "older" (mine is newer AND different: kept) or nil.
--- History uses the same per-day rules as Auctionator's SetPrice, on the day the price was seen.
-local function Apply(r, key, price, available, ts)
+-- Newest wins. Same time, different price (rare): the lower price wins, the same on every
+-- player, so everyone ends up with the same list. force = the host's merged value (a handshake
+-- reply), taken as-is.
+-- Returns "changed" (written), "same" (only our timestamp moved) or nil (ours kept).
+local function Apply(r, key, price, available, ts, force)
   local db = DB()
   local data = db and db.db
   if type(data) ~= "table" then return nil end
@@ -171,24 +198,24 @@ local function Apply(r, key, price, available, ts)
 
   local entry = data[key]
   if entry ~= nil and type(entry) ~= "table" then return nil end
-  if not entry then
-    entry = { l = {}, h = {}, a = {}, m = 0 }
-  end
+  if not entry then entry = { l = {}, h = {}, a = {}, m = 0 } end
 
-  -- Only a newer AND different price is written into Auctionator. A newer sighting of the
-  -- same price just moves our timestamp; an older one is never written.
-  if ts <= SeenAt(r, key, entry) then
-    return ((entry.m or 0) > 0 and entry.m ~= price) and "older" or nil
+  local mine = SeenAt(r, key, entry)
+  if not force then
+    if ts < mine then return nil end
+    if ts == mine and (entry.m or 0) > 0 and price >= entry.m then return nil end
   end
-  r.ts[key] = ts
+  if ts > mine then r.ts[key] = ts end
   if entry.m == price then return "same" end
+
   local was = entry.m
-  r.unsent[key] = nil
   entry.m = price
   entry.l = entry.l or {}
   entry.h = entry.h or {}
   data[key] = entry
+  Track(key, was, price)
   known[key] = price
+  pending[key] = nil -- a newer price from a friend replaces ours: nothing of ours left to share
 
   local day = floor((ts - DayZero()) / 86400)
   if not db.cutoffDay or day > db.cutoffDay then
@@ -206,7 +233,28 @@ local function Apply(r, key, price, available, ts)
       entry.a[d] = math.max(entry.a[d] or 0, available)
     end
   end
+  NoteChange(r, key, price, was, true)
   return "changed", was
+end
+
+-- One price as sent on the wire: {key, price, available that day, seen at}
+local function Item(r, key, entry)
+  local ts = SeenAt(r, key, entry)
+  local day = entry.a and tostring(floor((ts - DayZero()) / 86400))
+  return { key, entry.m, day and entry.a[day] or 0, ts }
+end
+
+-- Every price in the given sections (a set of section numbers).
+local function ItemsIn(set)
+  local r, db = Realm(), DB()
+  local list = {}
+  if not r or not db or type(db.db) ~= "table" then return list end
+  for key, entry in pairs(db.db) do
+    if type(entry) == "table" and (entry.m or 0) > 0 and set[SectionOf(tostring(key))] then
+      list[#list + 1] = Item(r, tostring(key), entry)
+    end
+  end
+  return list
 end
 
 ----------------------------------------------------------------------------------------------
@@ -214,25 +262,17 @@ end
 
 local transferCounter = 0
 
--- list = { {key, price, available, ts}, ... }; sent as one transfer of BATCH-sized messages,
--- the last one marked fin. opts.k marks a join upload ("join") or the host's answer ("reply").
-function ns.SendEntries(targets, list, prio, opts)
+-- One transfer of BATCH-sized DATA messages, the last marked fin. target = nil -> everyone.
+function ns.SendEntries(target, list, prio, k)
   local realm = ns.RealmKey()
   transferCounter = transferCounter + 1
   local x = transferCounter
-  local k = opts and opts.k or nil
-  local n = #list
-  if n == 0 then
-    for _, t in ipairs(targets) do
-      ns.Send(t, { t = "DATA", r = realm, x = x, e = {}, b = 0, fin = true, k = k }, prio)
-    end
-    return
-  end
-  local i = 1
-  while i <= n do
+  local n, i = #list, 1
+  repeat
     local last = math.min(i + BATCH - 1, n)
     local base = math.huge
     for j = i, last do base = math.min(base, list[j][4]) end
+    if base == math.huge then base = 0 end
     local e = {}
     for j = i, last do
       local it = list[j]
@@ -241,22 +281,17 @@ function ns.SendEntries(targets, list, prio, opts)
       e[#e + 1] = it[3] or 0
       e[#e + 1] = it[4] - base
     end
-    local msg = { t = "DATA", r = realm, x = x, e = e, b = base, fin = (last == n) or nil, k = k }
-    for _, t in ipairs(targets) do ns.Send(t, msg, prio) end
+    local msg = { t = "DATA", r = realm, x = x, e = e, b = base, fin = (last >= n) or nil, k = k }
+    if target then ns.Send(target, msg, prio) else ns.Broadcast(msg, prio) end
     i = last + 1
-  end
+  until i > n
 end
 
 ----------------------------------------------------------------------------------------------
--- Chat
---
--- Automatic messages (sign-in, sync results) go through ns.Notice and obey the "Show chat
--- messages" box. Answers to something the player did (/async commands, Sync now) and errors
--- always show. Sends are never announced, and updates arriving from several friends within a
--- few seconds share one line. Chat never names who prices came from.
+-- Chat (only you see it, never names anyone; "Show chat messages" turns it off)
 
 local REPORT_DELAY = 10
-local reported, reportTimer = 0, nil -- changed prices waiting for the combined line
+local reported, reportTimer = 0, nil
 
 local function FlushReport()
   reportTimer = nil
@@ -271,97 +306,147 @@ local function Report(changed)
   if not reportTimer then reportTimer = C_Timer.NewTimer(REPORT_DELAY, FlushReport) end
 end
 
--- The player asked (Sync now) -> always say; automatic (login) -> only if ticked.
+-- The player asked (Sync now) -> always say; automatic -> only if ticked.
 local function Say(verbose, fmt, ...)
   if verbose then ns.Print(fmt, ...) else ns.Notice(fmt, ...) end
 end
 
 ----------------------------------------------------------------------------------------------
--- Joining: the host compare.
---
--- Everyone already online is in sync (they joined the same way, and new scans are shared live),
--- so any one of them can stand in for the group. When you come online:
---   1. HELLO to everyone; each answers PONG with when they came online (os) and whether they've
---      finished their own join (rd).
---   2. The host is picked automatically: finished joining first, then online longest.
---   3. You upload your last maxAgeDays of prices to the host (DATA k="join").
---   4. The host keeps whichever is newer per item, then sends back everything where its price is
---      newer than yours or you don't have it (DATA k="reply"), and passes the prices you brought
---      that were new to it on to everyone else online (an ordinary update).
---   5. If the host goes quiet, you move on to the next one.
--- Alone, there's nothing to do: your prices go into the next compare.
+-- State and the host
 
-local JOIN_TIMEOUT = 180 -- seconds without hearing from the host before trying the next one
-                         -- (generous: a first upload over whispers can take a minute or two)
+ns.onlineSince = nil
+ns.state = "starting" -- "waiting" (looking for a host) | "syncing" (handshaking) | "ready"
+ns.syncingWith = nil
 
-ns.onlineSince = nil -- server time we came online (set at login)
-ns.ready = false     -- finished our own join (or found nobody): fit to be someone's host
-
-local join      -- { verbose, candidates = {peerKey...}, idx, pongs = {peerKey = {os, rd}}, timer, started }
-local transfers = {} -- peerKey .. "/" .. x -> per-transfer state (see DATA below)
-
-local function DoneJoining()
-  ns.ready = true
-  if join and join.timer then join.timer:Cancel() end
-  join = nil
+local stateTimer
+local function StateMsg(t)
+  return { t = t or "STATE", r = ns.RealmKey(), st = ns.state, d = ns.Fingerprint(), os = ns.onlineSince,
+    w = ns.syncingWith }
 end
 
--- Everything we have from the last maxAgeDays, for a join upload or a host reply.
-local function AllRecent()
-  local r, db = Realm(), DB()
-  local list = {}
-  if not r or not db or type(db.db) ~= "table" then return list end
-  local oldest = ns.Now() - ns.db.maxAgeDays * 86400
-  for key, entry in pairs(db.db) do
-    if type(entry) == "table" and (entry.m or 0) > 0 then
-      local ts = SeenAt(r, key, entry)
-      if ts > oldest then
-        local day = entry.a and tostring(floor((ts - DayZero()) / 86400))
-        list[#list + 1] = { key, entry.m, day and entry.a[day] or 0, ts }
-      end
+-- Tell everyone our state/fingerprint (debounced: several changes in a row send one message).
+function ns.AnnounceState()
+  if stateTimer then return end
+  stateTimer = C_Timer.NewTimer(2, function()
+    stateTimer = nil
+    if ns.RealmKey() then ns.Broadcast(StateMsg(), "NORMAL") end
+  end)
+end
+
+local function SetState(st, with)
+  ns.state, ns.syncingWith = st, with
+  ns.AnnounceState()
+end
+
+local function Compatible(peer)
+  return (peer.proto or 1) >= ns.PROTOCOL and not peer.otherRealm
+end
+
+-- The host: whoever holds the master list - ready, online longest (ties: name). Includes you.
+-- Returns peer table, "me", or nil.
+function ns.GroupHost()
+  local bestOs, bestName, best = nil, nil, nil
+  local function Consider(os, name, who)
+    if not os then return end
+    if not bestOs or os < bestOs or (os == bestOs and name < bestName) then
+      bestOs, bestName, best = os, name, who
     end
   end
-  return list
+  if ns.state == "ready" then Consider(ns.onlineSince, ns.ShortName(UnitName("player")), "me") end
+  for short, peer in pairs(ns.peers) do
+    if ns.IsPeerOnline(peer) and Compatible(peer) and peer.st == "ready" then Consider(peer.os, short, peer) end
+  end
+  return best
 end
 
-local function TryNextHost()
-  if not join then return end
-  if join.timer then join.timer:Cancel(); join.timer = nil end
-  join.idx = join.idx + 1
-  local key = join.candidates[join.idx]
-  local peer = key and ns.peers[key]
-  if not peer then
-    if join.idx > 1 then
-      ns.Log("sync gave up: no host answered")
-      Say(join.verbose, "Couldn't finish syncing; it'll try again next time.")
+function ns.MasterFingerprint()
+  local host = ns.GroupHost()
+  if host == "me" then return ns.Fingerprint() end
+  return host and host.d
+end
+
+----------------------------------------------------------------------------------------------
+-- Trigger 2: your prices changed (scan finished, or auction house closed after searching)
+
+function ns.ShareChanges(why)
+  local r, db = Realm(), DB()
+  if not r or not db or type(db.db) ~= "table" or not next(pending) then return end
+  local list = {}
+  for key, before in pairs(pending) do
+    local entry = db.db[key]
+    if type(entry) == "table" and (entry.m or 0) > 0 and entry.m ~= before then
+      list[#list + 1] = Item(r, key, entry)
     end
-    DoneJoining()
+  end
+  wipe(pending)
+  if #list == 0 then return end
+  if not ns.db.shareScans then
+    ns.Log("%s changed %s; not shared (sharing is off)", why, ns.Plural(#list, "price"))
     return
   end
-  join.host = key
-  local list = AllRecent()
-  local p = join.pongs[key] or {}
-  ns.Log("host: %s (online since %s%s); uploading your %s",
-    peer.name, p.os and date("%H:%M", p.os) or "?", p.rd and "" or ", still syncing itself", ns.Plural(#list, "price"))
-  ns.SendEntries({ ns.ReplyTarget(peer) }, list, "BULK", { k = "join" })
+  local online = 0
+  for _, peer in pairs(ns.peers) do
+    if ns.IsPeerOnline(peer) and Compatible(peer) then online = online + 1 end
+  end
+  if online == 0 then
+    ns.Log("%s changed %s; nobody online, they go into your next handshake", why, ns.Plural(#list, "price"))
+    ns.AnnounceState()
+    return
+  end
+  ns.Log("%s changed %s: sharing with %s", why, ns.Plural(#list, "price"), ns.Plural(online, "player"))
+  ns.SendEntries(nil, list, "NORMAL")
+  ns.AnnounceState()
+end
+
+----------------------------------------------------------------------------------------------
+-- Trigger 1: coming online - the handshake with the host
+
+local join -- { verbose, host = peer, started, timer, sections }
+local hosting = {} -- peerKey -> { sections = set } while we host someone's handshake
+local transfers = {}
+
+local function FinishJoin(verbose, changed, hostName)
+  local r = Realm()
+  if join and join.timer then join.timer:Cancel() end
+  join = nil
+  if r then r.lastCatchUp = ns.Now() end
+  SetState("ready")
+  if hostName then
+    ns.Log("in sync with %s: master list %s, fingerprint %s", hostName, ns.Plural(itemCount, "price"), ns.Fingerprint())
+  end
+  if changed and changed > 0 then
+    Say(verbose, "Synced: updated %s.", ns.Plural(changed, "price"))
+  elseif hostName then
+    Say(verbose, "Up to date.")
+  end
+end
+
+local function Handshake(host, verbose)
+  if join and join.timer then join.timer:Cancel() end
+  join = { verbose = verbose, host = host, started = ns.Now() }
+  SetState("syncing", host.name)
+  ns.Log("handshaking with %s (host, online since %s): comparing your %s",
+    host.name, host.os and date("%H:%M", host.os) or "?", ns.Plural(itemCount, "price"))
+  local b = {}
+  for i = 0, SECTIONS - 1 do b[i + 1] = sections[i] end
+  ns.Send(ns.ReplyTarget(host), { t = "SUM", r = ns.RealmKey(), b = b }, "ALERT")
   local mine = join
-  local function Arm()
+  join.arm = function()
     if join ~= mine then return end
     if join.timer then join.timer:Cancel() end
     join.timer = C_Timer.NewTimer(JOIN_TIMEOUT, function()
-      if join == mine then
-        ns.Log("%s went quiet for %ds, trying the next host", peer.name, JOIN_TIMEOUT)
-        TryNextHost()
-      end
+      if join ~= mine then return end
+      ns.Log("%s stopped answering; looking for another host", host.name)
+      host.gone = true
+      join = nil
+      ns.CatchUp(verbose)
     end)
   end
-  mine.arm = Arm
-  Arm()
+  join.arm()
 end
 
--- Login (or Sync now): find who's online and compare with a host.
+-- Login / Sync now: find who's online, then handshake with the host.
 function ns.CatchUp(verbose)
-  if verbose then ns.FlushShared() end -- Sync now also sends what's collected so far
   local r = Realm()
   if not r then
     Say(verbose, "Auctionator's prices aren't loaded yet; try again in a moment.")
@@ -373,80 +458,141 @@ function ns.CatchUp(verbose)
     ns.DeferSync(verbose)
     return
   end
-  if join and join.host then
+  if join then
     Say(verbose, "Already syncing.")
     return
   end
-  local targets = ns.AllTargets()
-  if #targets == 0 then
-    if not (ns.db.guild or ns.db.friends or ns.db.bnet) then
-      Say(verbose, "Syncing is off: tick guild, friends or Battle.net in |cffffd100/async|r.")
-    else
-      Say(verbose, "No guild members or friends online to sync with.")
-    end
-    DoneJoining()
-    return
-  end
-  join = { verbose = verbose, pongs = {}, candidates = {}, idx = 0, started = ns.Now() }
-  ns.Log("sync started (%s): saying hello to %s", verbose and "Sync now" or "login", ns.Plural(#targets, "place"))
-  for _, t in ipairs(targets) do
-    ns.Send(t, { t = "HELLO", r = ns.RealmKey(), j = true }, "ALERT")
-  end
+  if verbose then ns.ShareChanges("your auction house searches") end
+  if ns.state ~= "ready" then SetState("waiting") end
+  ns.JoinChannel()
+  local routes = ns.Broadcast(StateMsg("HELLO"), "ALERT", true)
+  ns.Log("looking for players with AuctionatorSync (%s)", routes ~= "" and routes or "no routes")
   if verbose then ns.Print("Syncing...") end
-  local mine = join
-  C_Timer.After(PONG_WAIT, function()
-    if join ~= mine then return end
-    for key, info in pairs(mine.pongs) do
-      if ns.peers[key] then mine.candidates[#mine.candidates + 1] = key end
+  C_Timer.After(HELLO_WAIT, function()
+    if join then return end
+    local answered = {}
+    for _, peer in pairs(ns.peers) do
+      if ns.IsPeerOnline(peer) then
+        answered[#answered + 1] = string.format("%s (%s)", peer.name,
+          not Compatible(peer) and ("v" .. tostring(peer.version) .. ", can't sync") or (peer.st or "?"))
+      end
     end
-    ns.Log("%s answered", ns.Plural(#mine.candidates, "player"))
-    if #mine.candidates == 0 then
-      ns.Log("nobody to sync with: your prices go into the next sync")
-      Say(verbose, "No one online with AuctionatorSync yet. Your prices join the next sync.")
-      DoneJoining()
+    table.sort(answered)
+    if #answered > 0 then
+      ns.Log("online: %s", table.concat(answered, ", "))
+    else
+      ns.Log("nobody else online with AuctionatorSync")
+    end
+
+    local host = ns.GroupHost()
+    if host and host ~= "me" then
+      Handshake(host, verbose)
       return
     end
-    table.sort(mine.candidates, function(a, b)
-      local pa, pb = mine.pongs[a], mine.pongs[b]
-      if (pa.rd and true) ~= (pb.rd and true) then return pa.rd and true or false end
-      if pa.os ~= pb.os then return pa.os < pb.os end
-      return a < b
-    end)
-    TryNextHost()
+    -- Nobody holds a master list yet (alone, or everyone just logged in): the one online
+    -- longest starts it; everyone else handshakes with them once they're ready.
+    local first, firstOs = "me", ns.onlineSince or 0
+    for _, peer in pairs(ns.peers) do
+      if ns.IsPeerOnline(peer) and Compatible(peer) and (peer.os or math.huge) < firstOs then
+        first, firstOs = peer, peer.os
+      end
+    end
+    if first == "me" then
+      if host == "me" then
+        Say(verbose, "Up to date: you hold the master list.")
+      else
+        ns.Log("you start the master list: %s, fingerprint %s", ns.Plural(itemCount, "price"), ns.Fingerprint())
+        Say(verbose, #answered > 0 and "Up to date." or "No one online with AuctionatorSync yet. Your prices join the next sync.")
+      end
+      local rr = Realm()
+      if rr then rr.lastCatchUp = ns.Now() end
+      SetState("ready")
+    else
+      ns.Log("%s is starting the master list; handshaking with them when they're ready", first.name)
+      C_Timer.After(HELLO_WAIT, function() if not join and ns.state ~= "ready" then ns.CatchUp(verbose) end end)
+    end
   end)
-end
-
--- Kept for older callers: a plain hello, so friends know we're here.
-function ns.Hello()
-  for _, t in ipairs(ns.AllTargets()) do
-    ns.Send(t, { t = "HELLO", r = ns.RealmKey() }, "NORMAL")
-  end
 end
 
 ----------------------------------------------------------------------------------------------
 -- Messages
 
+local function NoteState(peer, msg, isHello)
+  local was, wasD, wasOffline = peer.st, peer.d, peer.lastHeard == nil
+  peer.st, peer.d, peer.os, peer.w = msg.st, msg.d, tonumber(msg.os), msg.w
+  peer.lastHeard = ns.Now()
+  if isHello or wasOffline then
+    ns.Log("%s came online (v%s)", peer.name, tostring(peer.version))
+  end
+  if msg.st == "syncing" and was ~= "syncing" and msg.w then
+    ns.Log("%s is handshaking with %s", peer.name, ns.IsMe(msg.w) and "you" or msg.w)
+  end
+  if msg.st == "ready" and (was ~= "ready" or wasD ~= msg.d) then
+    local master = ns.MasterFingerprint()
+    if master and msg.d == master then
+      ns.Log("%s is in sync (fingerprint %s)", peer.name, tostring(msg.d))
+    else
+      ns.Log("%s is ready, but their prices differ from the master list", peer.name)
+    end
+  end
+end
+
 function ns.OnMessage(msg, peer)
   local r = Realm()
   if not r or msg.r ~= ns.RealmKey() then
     if not peer.otherRealm then
-      ns.Log("ignoring %s: prices for %s, not %s", peer.name, tostring(msg.r), tostring(ns.RealmKey()))
+      ns.Log("%s is on another realm or faction (%s): not syncing with them", peer.name, tostring(msg.r))
     end
     peer.otherRealm = true
     return
   end
   peer.otherRealm = nil
+  if not Compatible(peer) then
+    if not peer.warned then
+      peer.warned = true
+      ns.Log("%s came online on v%s, which can't sync with v%s - they need to update",
+        peer.name, tostring(msg.v), ns.VERSION)
+    end
+    return
+  end
   local peerKey = ns.ShortName(peer.name)
-  if join and join.host == peerKey and join.arm then join.arm() end -- the host is still talking
+  if join and join.host == peer and join.arm then join.arm() end
 
   if msg.t == "HELLO" then
-    ns.Send(ns.ReplyTarget(peer), { t = "PONG", r = ns.RealmKey(), os = ns.onlineSince, rd = ns.ready }, "ALERT")
+    NoteState(peer, msg, true)
+    ns.Send(ns.ReplyTarget(peer), StateMsg(), "ALERT")
 
-  elseif msg.t == "PONG" then
-    -- only peers on this protocol can host (older versions don't send os)
-    if join and not join.host and msg.os and (tonumber(msg.p) or 1) >= ns.PROTOCOL then
-      join.pongs[peerKey] = { os = tonumber(msg.os) or math.huge, rd = msg.rd }
+  elseif msg.t == "STATE" then
+    NoteState(peer, msg, false)
+
+  elseif msg.t == "SUM" then
+    -- We're the host for their handshake: which sections differ?
+    local diff, set = {}, {}
+    for i = 0, SECTIONS - 1 do
+      if tonumber(type(msg.b) == "table" and msg.b[i + 1]) ~= sections[i] then
+        diff[#diff + 1] = i
+        set[i] = true
+      end
     end
+    ns.Log("%s is handshaking with you (you're the host): %d of %d sections differ", peer.name, #diff, SECTIONS)
+    hosting[peerKey] = #diff > 0 and { sections = set } or nil
+    ns.Send(ns.ReplyTarget(peer), { t = "NEED", r = ns.RealmKey(), bk = diff }, "ALERT")
+    if #diff == 0 then ns.Log("%s already has the master list", peer.name) end
+
+  elseif msg.t == "NEED" then
+    if not join or join.host ~= peer then return end
+    local bk = type(msg.bk) == "table" and msg.bk or {}
+    if #bk == 0 then
+      ns.Log("%s: your prices already match the master list", peer.name)
+      FinishJoin(join.verbose, 0, peer.name)
+      return
+    end
+    local set = {}
+    for _, i in ipairs(bk) do set[tonumber(i)] = true end
+    join.sections = set
+    local list = ItemsIn(set)
+    ns.Log("%d of %d sections differ: sending %s %s from those sections", #bk, SECTIONS, peer.name, ns.Plural(#list, "price"))
+    ns.SendEntries(ns.ReplyTarget(peer), list, "BULK", "join")
 
   elseif msg.t == "DATA" then
     local e, base = msg.e, tonumber(msg.b) or 0
@@ -454,25 +600,22 @@ function ns.OnMessage(msg, peer)
     local tkey = peerKey .. "/" .. tostring(msg.x)
     local tr = transfers[tkey]
     if not tr then
-      -- k = "join": we're their host; "reply": our host answering our join; nil: a live update
       tr = { kind = msg.k or "update", changed = 0, received = 0, brought = {}, theirs = {} }
       transfers[tkey] = tr
     end
+    local force = tr.kind == "reply"
     for i = 1, #e - 3, 4 do
       local key, price, avail = tostring(e[i]), tonumber(e[i + 1]), tonumber(e[i + 2])
       local ts = base + (tonumber(e[i + 3]) or 0)
       tr.received = tr.received + 1
-      local result, was = Apply(r, key, price, avail, ts)
-      if result == "changed" then
+      if Apply(r, key, price, avail, ts, force) == "changed" then
         tr.changed = tr.changed + 1
-        NoteChange(r, key, price, was, true)
         if tr.kind == "join" then tr.brought[#tr.brought + 1] = { key, price, avail or 0, ts } end
       end
-      if tr.kind == "join" and price then tr.theirs[key] = { ts, price } end
+      if tr.kind == "join" and price then tr.theirs[key] = price end
     end
     if tr.timer then tr.timer:Cancel() end
     if not msg.fin then
-      -- a transfer that never finishes is dropped after a while
       tr.timer = C_Timer.NewTimer(JOIN_TIMEOUT, function()
         transfers[tkey] = nil
         ns.Log("prices from %s stopped arriving partway (%s kept)", peer.name, ns.Plural(tr.changed, "change"))
@@ -482,53 +625,85 @@ function ns.OnMessage(msg, peer)
     transfers[tkey] = nil
 
     if tr.kind == "join" then
-      -- We're the host. Send back what's newer here (or missing there)...
+      -- Host: merge done. Send them what differs, share what they brought.
+      local h = hosting[peerKey]
+      hosting[peerKey] = nil
+      ns.Log("received %s from %s; %s newer than yours", ns.Plural(tr.received, "price"), peer.name, ns.Num(tr.changed))
+      ns.Log("new master list generated: %s, fingerprint %s", ns.Plural(itemCount, "price"), ns.Fingerprint())
       local reply = {}
-      for _, it in ipairs(AllRecent()) do
-        local t = tr.theirs[it[1]]
-        if not t or (it[4] > t[1] and it[2] ~= t[2]) then reply[#reply + 1] = it end
+      for _, it in ipairs(ItemsIn(h and h.sections or {})) do
+        if tr.theirs[it[1]] ~= it[2] then reply[#reply + 1] = it end
       end
-      ns.SendEntries({ ns.ReplyTarget(peer) }, reply, "BULK", { k = "reply" })
-      -- ...and pass what they brought on to everyone else online.
+      ns.Log("sending %s the master list for those sections: %s", peer.name, ns.Plural(#reply, "price"))
+      ns.SendEntries(ns.ReplyTarget(peer), reply, "BULK", "reply")
       if #tr.brought > 0 then
-        local others = {}
-        for _, t in ipairs(ns.PeerTargets()) do
-          if not (t.kind ~= "GUILD" and t.name and ns.ShortName(t.name) == peerKey) then others[#others + 1] = t end
+        local others = 0
+        for short, p in pairs(ns.peers) do
+          if short ~= peerKey and ns.IsPeerOnline(p) and Compatible(p) then others = others + 1 end
         end
-        if #others > 0 then ns.SendEntries(others, tr.brought, "NORMAL") end
+        if others > 0 then
+          ns.Log("master list ready: sharing the %s from %s with %s", ns.Plural(#tr.brought, "new price"),
+            peer.name, ns.Plural(others, "other player"))
+          ns.SendEntries(nil, tr.brought, "NORMAL", "fwd")
+        end
       end
       Report(tr.changed)
-      ns.Log("hosted %s: %s received, %s newer than yours; sent back %s; passed %s on to others",
-        peer.name, ns.Num(tr.received), ns.Num(#tr.brought), ns.Plural(#reply, "price"), ns.Num(#tr.brought))
+      ns.AnnounceState()
 
-    elseif tr.kind == "reply" and join and join.host == peerKey then
-      -- Our join is done: we now hold the group's best prices, and they hold ours.
-      local verbose = join.verbose
-      r.lastCatchUp = ns.Now()
-      wipe(r.unsent) -- the host has everything we had
-      ns.Log("sync done with %s: %s received, %s changed", peer.name, ns.Num(tr.received), ns.Num(tr.changed))
-      DoneJoining()
-      if tr.changed > 0 then
-        Say(verbose, "Synced: updated %s.", ns.Plural(tr.changed, "price"))
-      else
-        Say(verbose, "Up to date.")
+    elseif tr.kind == "reply" then
+      if join and join.host == peer then
+        ns.Log("received the master list from %s: %s, %s changed", peer.name, ns.Plural(tr.received, "price"), ns.Num(tr.changed))
+        FinishJoin(join.verbose, tr.changed, peer.name)
       end
+
+    elseif tr.kind == "fwd" then
+      ns.Log("%s (host) shared a newcomer's prices: %s, %s changed", peer.name, ns.Plural(tr.received, "price"), ns.Num(tr.changed))
+      Report(tr.changed)
+      ns.AnnounceState()
 
     else
-      ns.Log("update from %s: %s, %s changed", peer.name, ns.Plural(tr.received, "price"), ns.Num(tr.changed))
+      ns.Log("%s shared %s from their scan: %s changed", peer.name, ns.Plural(tr.received, "price"), ns.Num(tr.changed))
       Report(tr.changed)
+      ns.AnnounceState()
     end
   end
 end
 
 ----------------------------------------------------------------------------------------------
--- Auctionator's full scans. Auctionator announces scan start/finish on its EventBus; we
--- register a listener there (no change to Auctionator). A sync waits while a scan runs, so it
--- compares the fresh prices.
+-- Heartbeat, who went offline, and the safety net
 
-local SCAN_TIMEOUT = 900  -- forget a scan that never reported back after 15 minutes
+local mismatchSince
+
+C_Timer.NewTicker(30, function()
+  if not ns.store or not ns.RealmKey() or ns.state == "starting" then return end
+  for _, peer in pairs(ns.peers) do
+    if not peer.gone and peer.lastSeen and not ns.IsPeerOnline(peer) then
+      peer.gone = true
+      peer.lastHeard = nil
+      ns.Log("%s went offline", peer.name)
+    end
+  end
+  -- Safety net: out of sync with the host for HEAL_AFTER seconds -> handshake again.
+  local host = ns.GroupHost()
+  if ns.state == "ready" and not join and host and host ~= "me" and host.d ~= ns.Fingerprint()
+    and not ns.IsScanning() and not next(pending) then
+    mismatchSince = mismatchSince or ns.Now()
+    if ns.Now() - mismatchSince >= HEAL_AFTER then
+      mismatchSince = nil
+      ns.Log("your prices have differed from the master list for %ds: re-syncing with %s", HEAL_AFTER, host.name)
+      Handshake(host, false)
+    end
+  else
+    mismatchSince = nil
+  end
+end)
+
+----------------------------------------------------------------------------------------------
+-- Auctionator's scans (its EventBus, listened to from outside) and the auction house closing
+
+local SCAN_TIMEOUT = 900
 local scanning, scanTimer = false, nil
-local deferred -- nil, or the `verbose` of a sync waiting for the scan to finish
+local deferred
 
 function ns.IsScanning() return scanning end
 function ns.DeferSync(verbose) deferred = deferred or verbose or false end
@@ -539,6 +714,7 @@ local function ScanEnded(completed)
   if completed then
     local r = Realm()
     if r then r.lastFullScan = ns.Now() end
+    ns.ShareChanges("your scan")
   end
   if deferred ~= nil then
     local verbose = deferred
@@ -555,11 +731,6 @@ function scanListener:ReceiveEvent(event)
     scanning = true
     if scanTimer then scanTimer:Cancel() end
     scanTimer = C_Timer.NewTimer(SCAN_TIMEOUT, function() ScanEnded(false) end)
-    -- a sync still asking around waits for the scan, then compares the fresh prices
-    if join and not join.host then
-      ns.DeferSync(join.verbose)
-      join = nil
-    end
   elseif kind == "complete" then
     ns.Log("Auctionator scan finished")
     ScanEnded(true)
@@ -587,10 +758,16 @@ function ns.WatchScans()
   if #names == 0 then return end
   local ok, err = pcall(Auctionator.EventBus.Register, Auctionator.EventBus, scanListener, names)
   scanEventsRegistered = ok
-  if not ok then ns.Debug("couldn't watch Auctionator scans: %s", tostring(err)) end
+  if not ok then ns.Log("couldn't watch Auctionator scans: %s", tostring(err)) end
 end
 
+-- Prices from ordinary searches go out when you close the auction house.
+ns.On("AUCTION_HOUSE_CLOSED", function()
+  if not scanning then ns.ShareChanges("your auction house searches") end
+end)
+
 ----------------------------------------------------------------------------------------------
+-- Login
 
 local function PruneTimestamps()
   local cutoff = ns.Now() - TS_KEEP_DAYS * 86400
@@ -598,19 +775,8 @@ local function PruneTimestamps()
     for key, ts in pairs(r.ts) do
       if ts < cutoff then r.ts[key] = nil end
     end
-    -- left over from 0.8 and earlier
-    r.ch, r.scanKeys = nil, nil
+    r.ch, r.scanKeys, r.unsent = nil, nil, nil -- left over from older versions
   end
-end
-
-local function SourcesText()
-  local list = {}
-  if ns.db.guild then list[#list + 1] = "guild" end
-  if ns.db.friends then list[#list + 1] = "friends" end
-  if ns.db.bnet then list[#list + 1] = "Battle.net friends" end
-  if #list == 0 then return nil end
-  if #list == 1 then return list[1] end
-  return table.concat(list, ", ", 1, #list - 1) .. " and " .. list[#list]
 end
 
 ns.On("PLAYER_LOGIN", function()
@@ -620,58 +786,77 @@ ns.On("PLAYER_LOGIN", function()
   ns.HookAuctionator()
   ns.WatchScans()
   C_Timer.NewTicker(10, ns.HookAuctionator)
-  C_Timer.NewTicker(SHARE_INTERVAL, ns.FlushShared)
+  C_Timer.NewTicker(HEARTBEAT, function()
+    if ns.state ~= "starting" and ns.RealmKey() then ns.Broadcast(StateMsg(), "NORMAL") end
+  end)
 end)
 
--- Once per session, after the first loading screen: the sign-in line, then the sync.
 local greeted = false
 ns.On("PLAYER_ENTERING_WORLD", function()
   if greeted then return end
   greeted = true
+  C_Timer.After(3, function() if ns.canEncode then ns.JoinChannel() end end)
   -- A few seconds in, so the line isn't lost in the burst of chat that follows a loading screen.
   C_Timer.After(4, function()
     if not ns.canEncode then
       ns.Print("|cffff5555Can't sync: this game client is missing C_EncodingUtil.|r")
       return
     end
-    local sources = SourcesText()
-    if sources then
-      ns.Notice("v%s ready. Syncing prices with your %s. |cffffd100/async|r for options.", ns.VERSION, sources)
-    else
-      ns.Notice("v%s ready, but syncing is off (nothing ticked). |cffffd100/async|r for options.", ns.VERSION)
-    end
+    ns.Notice("v%s ready. Syncing prices with everyone online who has AuctionatorSync. |cffffd100/async|r for options.", ns.VERSION)
   end)
-  -- Give the guild roster and friends list a moment to arrive.
-  C_Timer.After(10, function()
+  C_Timer.After(8, function()
     if not ns.canEncode then return end
     ns.HookAuctionator()
-    ns.RefreshRosters()
+    ns.Log("you came online (v%s)", ns.VERSION)
     if ns.db.catchUpOnLogin then
       ns.CatchUp(false)
     else
-      ns.Hello()
-      ns.ready = true
+      ns.Log("syncing at login is off: you'll get scan updates, but no handshake")
+      SetState("ready")
+      ns.Broadcast(StateMsg("HELLO"), "NORMAL", true)
     end
   end)
 end)
 
+----------------------------------------------------------------------------------------------
+-- Who's online and in sync (the /async list and /async status)
+
+-- rows: { name, version, text, color, host, me }, host first
+function ns.StatusRows()
+  local host = ns.GroupHost()
+  local master = ns.MasterFingerprint()
+  local function Text(st, d, with, compatible, version)
+    if not compatible then return "needs update (v" .. tostring(version) .. ")", "ff5555" end
+    if st == "syncing" then return "handshaking" .. (with and (" with " .. (ns.IsMe(with) and "you" or with)) or ""), "ffd100" end
+    if st ~= "ready" then return "waiting to sync", "ffd100" end
+    if master and d == master then return "in sync", "33ff99" end
+    return "not in sync yet", "ff9966"
+  end
+  local rows = {}
+  local myText, myColor = Text(ns.state, ns.Fingerprint(), ns.syncingWith, true)
+  rows[#rows + 1] = { name = "You", version = ns.VERSION, text = myText, color = myColor, host = host == "me", me = true }
+  for _, peer in pairs(ns.peers) do
+    if ns.IsPeerOnline(peer) and not peer.otherRealm then
+      local t, c = Text(peer.st, peer.d, peer.w, Compatible(peer), peer.version)
+      rows[#rows + 1] = { name = peer.name, version = peer.version, text = t, color = c, host = host == peer }
+    end
+  end
+  table.sort(rows, function(a, b)
+    if a.host ~= b.host then return a.host end
+    if (a.me or false) ~= (b.me or false) then return a.me and true or false end
+    return a.name < b.name
+  end)
+  return rows
+end
+
 function ns.PrintStatus()
   local r = Realm()
-  ns.Print("v%s on %s.", ns.VERSION, tostring(ns.RealmKey() or "?"))
+  ns.Print("v%s on %s: %s, fingerprint %s.", ns.VERSION, tostring(ns.RealmKey() or "?"),
+    ns.Plural(itemCount, "price"), ns.Fingerprint())
   if r then
-    local count = 0
-    for _ in pairs(r.ts) do count = count + 1 end
-    ns.Print("Tracking %s. Last sync: %s.", ns.Plural(count, "price"),
-      (r.lastCatchUp or 0) > 0 and date("%d %b %H:%M", r.lastCatchUp) or "never")
+    ns.Print("Last sync: %s.", (r.lastCatchUp or 0) > 0 and date("%d %b %H:%M", r.lastCatchUp) or "never")
   end
-  local versions, groups, count = ns.OnlineGroups()
-  if count == 1 then
-    ns.Print("No one else online with AuctionatorSync.")
-    return
+  for _, row in ipairs(ns.StatusRows()) do
+    ns.Print("  %s%s v%s: |cff%s%s|r", row.name, row.host and " (host)" or "", tostring(row.version), row.color, row.text)
   end
-  local parts = {}
-  for _, v in ipairs(versions) do
-    parts[#parts + 1] = string.format("v%s: %s", v, table.concat(groups[v], ", "))
-  end
-  ns.Print("Online (%d): %s.", count, table.concat(parts, " · "))
 end
