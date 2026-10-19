@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.15.6
+- Docked windows stay docked: a window that opened beside another is attached to it, so dragging the Price List (or whichever window it docked to) brings the docked windows along. Dragging a docked window itself detaches it.
+
 ## 0.15.5
 - Price List: shift-click an item (in your bags, a chat link, anywhere) while the Price List is open and its name goes into the search box, like at the auction house. While you're typing in chat, the link goes to chat as usual.
 

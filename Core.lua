@@ -126,8 +126,20 @@ end)
 
 -- Window placement, shared by the /async window, the log and the Price List: a window that opens
 -- while others are up docks against the first one it can - its left side, then right, below,
--- above - edge to edge, tops level, fully on screen and overlapping none of them. With nothing
--- else open it stays where it was (wherever you dragged it).
+-- above - edge to edge, tops level, fully on screen and overlapping none of them. Docked means
+-- attached: it follows that window when you drag it (dragging the docked one itself detaches it).
+-- With nothing else open it stays where it was (wherever you dragged it).
+
+-- Is `frame` attached (directly or through others) to `target`? Docking target to it would loop.
+local function AttachedTo(frame, target)
+  for _ = 1, 6 do
+    local _, rel = frame:GetPoint(1)
+    if not rel or rel == UIParent then return false end
+    if rel == target then return true end
+    frame = rel
+  end
+  return false
+end
 local WINDOWS = { "AuctionatorSyncFrame", "AuctionatorSyncPriceListFrame", "AuctionatorSyncLogFrame" }
 
 function ns.PlaceWindow(win)
@@ -149,16 +161,18 @@ function ns.PlaceWindow(win)
     return true
   end
   for _, o in ipairs(others) do
-    for _, spot in ipairs({
-      { o:GetLeft() - w, o:GetTop() },  -- left of it
-      { o:GetRight(), o:GetTop() },     -- right of it
-      { o:GetLeft(), o:GetBottom() },   -- below it
-      { o:GetLeft(), o:GetTop() + h },  -- above it
-    }) do
-      if Fits(spot[1], spot[2]) then
-        win:ClearAllPoints()
-        win:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", spot[1], spot[2])
-        return
+    if not AttachedTo(o, win) then
+      for _, spot in ipairs({
+        { o:GetLeft() - w, o:GetTop(), "TOPRIGHT", "TOPLEFT" },     -- left of it
+        { o:GetRight(), o:GetTop(), "TOPLEFT", "TOPRIGHT" },        -- right of it
+        { o:GetLeft(), o:GetBottom(), "TOPLEFT", "BOTTOMLEFT" },    -- below it
+        { o:GetLeft(), o:GetTop() + h, "BOTTOMLEFT", "TOPLEFT" },   -- above it
+      }) do
+        if Fits(spot[1], spot[2]) then
+          win:ClearAllPoints()
+          win:SetPoint(spot[3], o, spot[4], 0, 0) -- attached: follows o when o is dragged
+          return
+        end
       end
     end
   end
