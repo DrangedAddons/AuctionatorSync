@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.10.1
+- The realm and last-sync text in `/async` no longer runs under the new Log button.
+
 ## 0.10.0
 - **Verbose mode and log window.** Tick **Verbose mode** in `/async` (off by default) and a log window opens showing what AuctionatorSync is doing, step by step and timestamped: Auctionator scans starting and finishing, changed prices shared or kept for later, every hidden message sent (>>) and received (<<), who answered at login, which host was picked and why, how many prices were uploaded, received and changed, what a host sent back and passed on, and anything ignored (another realm or faction, someone not in your guild or friends list).
 - The log keeps the last 500 lines, even across `/reload`, so you can look back at what happened. **Clear** empties it; scroll with the mouse wheel (Shift jumps to the top or bottom); drag the corner to resize. Only you can see it.

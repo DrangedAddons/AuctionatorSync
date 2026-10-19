@@ -312,6 +312,7 @@ local function Build()
 
   frame.status = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   frame.status:SetPoint("LEFT", sync, "RIGHT", 12, 0)
+  frame.status:SetPoint("RIGHT", logButton, "LEFT", -8, 0)
   frame.status:SetJustifyH("LEFT")
 
   local itemButton = BuildPriceCheck(y - 50)
