@@ -130,6 +130,8 @@ end
 
 local function SectionOf(key) return Hash(key) % SECTIONS end
 
+ns.dataVersion = 0 -- bumped on every price / seen-time change (the Price List rebuilds on it)
+
 local function Track(key, oldPrice, newPrice)
   local s = SectionOf(key)
   if oldPrice and oldPrice > 0 then
@@ -169,6 +171,7 @@ local function OnLocalPrice(key, price, available)
   if not r or not key or not price then return end
   key = tostring(key)
   r.ts[key] = ns.Now()
+  ns.dataVersion = ns.dataVersion + 1
   local before = known[key]
   if before == price then return end -- same price seen again: nothing changed
   if pending[key] == nil then pending[key] = before or 0 end
@@ -221,7 +224,10 @@ local function Apply(r, key, price, available, ts, force)
     if ts < mine then return nil end
     if ts == mine and (entry.m or 0) > 0 and price >= entry.m then return nil end
   end
-  if ts > mine then r.ts[key] = ts end
+  if ts > mine then
+    r.ts[key] = ts
+    ns.dataVersion = ns.dataVersion + 1
+  end
   if entry.m == price then return "same" end
 
   local was = entry.m

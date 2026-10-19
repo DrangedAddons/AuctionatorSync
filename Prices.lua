@@ -54,6 +54,8 @@ local function ItemIDs()
   return ids
 end
 
+function ns.NamesLoading() return warmTicker ~= nil end
+
 -- done = resolved or given up on; total = every item ID in the list
 function ns.NameProgress()
   local done, total = 0, 0
@@ -181,7 +183,7 @@ local function BuildRows()
       local name = known[1]
       if suffix then name = name .. " " .. suffix end
       rows[#rows + 1] = {
-        key = key, id = id, name = name, extra = extra and ("ilvl " .. extra) or nil,
+        key = key, id = id, name = name, lname = name:lower(), extra = extra and ("ilvl " .. extra) or nil,
         quality = known[2], price = e[2], seen = e[3], avail = e[4],
         icon = icon, classID = classID or -1, subClassID = subClassID or -1,
       }
@@ -197,6 +199,10 @@ local win
 local ROW_H, SIDE_W, SIDE_ROW_H = 20, 180, 18
 local state = { classID = nil, subClassID = nil, search = "" } -- this session's selection
 local allRows = {}
+-- The filtered, sorted rows, kept between redraws: scrolling only redraws the visible lines.
+-- Remade only when the search, category, sort or the prices change (anything through Refresh).
+local visible, visibleDirty = {}, true
+local sideEntries, sideDirty = {}, true -- the sidebar's categories and counts, likewise
 
 local COLS = { -- x offsets inside the list
   { key = "price", label = "Price", x = 4, w = 110, right = true },
@@ -209,7 +215,7 @@ local function SortRows(rows)
   local key, desc = ns.db.priceSort or "name", ns.db.priceSortDesc and true or false
   table.sort(rows, function(a, b)
     local x, y
-    if key == "name" then x, y = a.name:lower(), b.name:lower()
+    if key == "name" then x, y = a.lname, b.lname
     elseif key == "price" then x, y = a.price, b.price
     elseif key == "avail" then x, y = a.avail or -1, b.avail or -1
     else x, y = b.seen, a.seen end -- "seen": most recent first
@@ -217,21 +223,23 @@ local function SortRows(rows)
       if desc then return x > y end
       return x < y
     end
-    return a.name:lower() < b.name:lower()
+    return a.lname < b.lname
   end)
 end
 
 local function Visible()
+  if not visibleDirty then return visible end
   local list = {}
   local search = state.search:lower()
   for _, row in ipairs(allRows) do
     if (not state.classID or row.classID == state.classID)
       and (not state.subClassID or row.subClassID == state.subClassID)
-      and (search == "" or row.name:lower():find(search, 1, true)) then
+      and (search == "" or row.lname:find(search, 1, true)) then
       list[#list + 1] = row
     end
   end
   SortRows(list)
+  visible, visibleDirty = list, false
   return list
 end
 
@@ -274,7 +282,8 @@ end
 local Refresh
 
 local function RefreshSide()
-  local entries = SideEntries()
+  if sideDirty then sideEntries, sideDirty = SideEntries(), false end
+  local entries = sideEntries
   local side = win.side
   local fit = side.fit
   side.offset = math.max(0, math.min(side.offset, #entries - fit))
@@ -337,7 +346,8 @@ end
 
 Refresh = function(rebuild)
   if not win or not win:IsShown() then return end
-  local done, total = ns.NameProgress()
+  local done, total = 0, 0
+  if ns.NamesLoading() or not win.built then done, total = ns.NameProgress() end
   if done < total then
     -- still loading item details: show the bar, not half-drawn rows
     win.loading:Show()
@@ -354,7 +364,9 @@ Refresh = function(rebuild)
   if rebuild or not win.built then
     allRows = BuildRows()
     win.built = true
+    win.builtVersion = ns.dataVersion
   end
+  visibleDirty, sideDirty = true, true -- search, category, sort or prices may have changed
   RefreshSide()
   RefreshList()
 end
@@ -628,8 +640,10 @@ local function Build()
     Refresh(true)
   end)
   win:SetScript("OnHide", function() onProgress = nil end)
-  -- prices can change while it's open (a scan, a sync)
-  C_Timer.NewTicker(5, function() if win:IsShown() then Refresh(true) end end)
+  -- prices can change while it's open (a scan, a sync): rebuild only when they actually have
+  C_Timer.NewTicker(5, function()
+    if win:IsShown() and win.builtVersion ~= ns.dataVersion then Refresh(true) end
+  end)
   win:Hide()
 end
 

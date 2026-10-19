@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.13.5
+- Price List: much smoother scrolling. Scrolling now only redraws the visible rows; the filtered, sorted list is kept and only remade when the search, category, sort or prices change (before, every scroll step re-sorted the whole list). Names are lowercased once per item instead of on every comparison, the sidebar keeps its counts between scrolls, and the background refresh only rebuilds when prices have actually changed.
+
 ## 0.13.4
 - Quick ways to open the Price List: **`/ah`**, and a key binding. Set the key under Options > Keybindings > AddOns > AuctionatorSync ("Open / close the Price List"); there is no default key, so nothing of yours gets overwritten.
 
