@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.15.2
+- Fixed: the clear button next to **Filter** was invisible (its icon doesn't exist on Forever). It's now a small **X** button in the same style as Filter and Settings, greyed out when there's nothing to clear.
+
 ## 0.15.1
 - Price List Filter: nothing is ticked to start, and nothing ticked means no filter. Ticking something turns that filter on; for **Rarity**, ticking qualities shows only those (untick them all and every quality shows again).
 - A small red X next to **Filter** clears just the Filter dropdown. The **Clear filters** button above the categories clears everything: category, search and the Filter dropdown.
