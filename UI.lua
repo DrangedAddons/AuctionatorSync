@@ -682,6 +682,7 @@ end
 
 function ns.ToggleWindow()
   if not frame then Build() end
+  if not frame:IsShown() then ns.PlaceWindow(frame) end
   frame:SetShown(not frame:IsShown())
   Refresh()
 end

@@ -124,6 +124,46 @@ ns.On("ADDON_LOADED", function(name)
   ns.db = db.settings
 end)
 
+-- Window placement, shared by the /async window, the log and the Price List: a window that opens
+-- while others are up docks against the first one it can - its left side, then right, below,
+-- above - edge to edge, tops level, fully on screen and overlapping none of them. With nothing
+-- else open it stays where it was (wherever you dragged it).
+local WINDOWS = { "AuctionatorSyncFrame", "AuctionatorSyncPriceListFrame", "AuctionatorSyncLogFrame" }
+
+function ns.PlaceWindow(win)
+  local others = {}
+  for _, name in ipairs(WINDOWS) do
+    local f = _G[name]
+    if f and f ~= win and f:IsShown() and f:GetLeft() then others[#others + 1] = f end
+  end
+  if #others == 0 then return end
+  local w, h = win:GetWidth(), win:GetHeight()
+  local sw, sh = UIParent:GetWidth(), UIParent:GetHeight()
+  local function Fits(x, top)
+    if x < 0 or x + w > sw or top > sh or top - h < 0 then return false end
+    for _, o in ipairs(others) do
+      if x < o:GetRight() and x + w > o:GetLeft() and top > o:GetBottom() and top - h < o:GetTop() then
+        return false
+      end
+    end
+    return true
+  end
+  for _, o in ipairs(others) do
+    for _, spot in ipairs({
+      { o:GetLeft() - w, o:GetTop() },  -- left of it
+      { o:GetRight(), o:GetTop() },     -- right of it
+      { o:GetLeft(), o:GetBottom() },   -- below it
+      { o:GetLeft(), o:GetTop() + h },  -- above it
+    }) do
+      if Fits(spot[1], spot[2]) then
+        win:ClearAllPoints()
+        win:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", spot[1], spot[2])
+        return
+      end
+    end
+  end
+end
+
 -- Price List shortcuts: /ah, and a key binding (Bindings.xml; set the key in the game's
 -- Keybindings menu under AddOns > AuctionatorSync).
 BINDING_HEADER_AUCTIONATORSYNC = "AuctionatorSync"

@@ -868,5 +868,6 @@ end
 
 function ns.TogglePriceList()
   if not win then Build() end
+  if not win:IsShown() then ns.PlaceWindow(win) end
   win:SetShown(not win:IsShown())
 end
