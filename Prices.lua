@@ -35,7 +35,8 @@ local function Book() return ns.store.names end
 local function Remember(id)
   local name, _, quality = GetInfo(id)
   if name then
-    Book()[id] = { name, quality or 1 }
+    local reqLevel = select(5, GetInfo(id))
+    Book()[id] = { name, quality or 1, reqLevel or 0 } -- name, quality, required level
     waiting[id] = nil
     return true
   end
@@ -62,7 +63,7 @@ function ns.NameProgress()
   local book = Book()
   for _, id in ipairs(ItemIDs()) do
     total = total + 1
-    if book[id] or failed[id] then done = done + 1 end
+    if (book[id] and book[id][3]) or failed[id] then done = done + 1 end
   end
   return done, total
 end
@@ -73,7 +74,8 @@ local function WarmTick()
   while qi <= #queue and asked < WARM_BATCH do
     local id = queue[qi]
     qi = qi + 1
-    if not Book()[id] and not failed[id] and not waiting[id] then
+    local b = Book()[id]
+    if (not b or not b[3]) and not failed[id] and not waiting[id] then
       if not GetInstant(id) then
         failed[id] = true -- not an item at all
       elseif not Remember(id) then
@@ -107,7 +109,8 @@ function ns.WarmNames()
   queue, qi = {}, 1
   local book = Book()
   for _, id in ipairs(ItemIDs()) do
-    if not book[id] and not failed[id] then queue[#queue + 1] = id end
+    -- missing, or saved before the book kept required levels
+    if (not book[id] or not book[id][3]) and not failed[id] then queue[#queue + 1] = id end
   end
   if #queue == 0 then return end
   ns.Log("Price List: loading item details for %s in the background", ns.Plural(#queue, "item"))
@@ -184,7 +187,7 @@ local function BuildRows()
       if suffix then name = name .. " " .. suffix end
       rows[#rows + 1] = {
         key = key, id = id, name = name, lname = name:lower(), extra = extra and ("ilvl " .. extra) or nil,
-        quality = known[2], price = e[2], seen = e[3], avail = e[4],
+        quality = known[2], level = known[3] or 0, price = e[2], seen = e[3], avail = e[4],
         icon = icon, classID = classID or -1, subClassID = subClassID or -1,
       }
     end
@@ -202,6 +205,66 @@ local allRows = {}
 -- The filtered, sorted rows, kept between redraws: scrolling only redraws the visible lines.
 -- Remade only when the search, category, sort or the prices change (anything through Refresh).
 local visible, visibleDirty = {}, true
+
+-- The Filter dropdown (like the auction house's): level range, usable only, uncollected only and
+-- rarity. Saved in ns.db.priceFilters; rarity[q] == false hides that quality.
+local CanUseItem = C_PlayerInfo and C_PlayerInfo.CanUseItem
+local TMog = C_TransmogCollection
+local HAS_COLLECTION = TMog and TMog.GetItemInfo and TMog.PlayerHasTransmogItemModifiedAppearance and true or false
+local IsEquippable = (C_Item and C_Item.IsEquippableItem) or IsEquippableItem
+local usableCache, uncollectedCache = {}, {}
+
+local function Filters()
+  ns.db.priceFilters = ns.db.priceFilters or { rarity = {} }
+  ns.db.priceFilters.rarity = ns.db.priceFilters.rarity or {}
+  return ns.db.priceFilters
+end
+
+local function FiltersActive()
+  local f = Filters()
+  if f.minLevel or f.maxLevel or f.usable or f.uncollected then return true end
+  for _, shown in pairs(f.rarity) do
+    if shown == false then return true end
+  end
+  return false
+end
+
+local function Usable(id)
+  if not CanUseItem then return true end
+  local u = usableCache[id]
+  if u == nil then
+    u = CanUseItem(id) and true or false
+    usableCache[id] = u
+  end
+  return u
+end
+
+-- An appearance this account could collect but hasn't (gear only).
+local function Uncollected(id)
+  if not HAS_COLLECTION then return false end
+  local u = uncollectedCache[id]
+  if u ~= nil then return u end
+  u = false
+  if IsEquippable and IsEquippable(id) then
+    local _, sourceID = TMog.GetItemInfo(id)
+    if sourceID then
+      local canCollect = true
+      if TMog.AccountCanCollectSource then canCollect = select(2, TMog.AccountCanCollectSource(sourceID)) end
+      u = canCollect and not TMog.PlayerHasTransmogItemModifiedAppearance(sourceID) or false
+    end
+  end
+  uncollectedCache[id] = u
+  return u
+end
+
+local function PassesFilters(row, f)
+  if f.rarity[row.quality] == false then return false end
+  if f.minLevel and row.level < f.minLevel then return false end
+  if f.maxLevel and row.level > f.maxLevel then return false end
+  if f.usable and not Usable(row.id) then return false end
+  if f.uncollected and not Uncollected(row.id) then return false end
+  return true
+end
 local sideEntries, sideDirty = {}, true -- the sidebar's categories and counts, likewise
 
 local COLS = { -- x offsets inside the list
@@ -232,10 +295,12 @@ local function Visible()
   if not visibleDirty then return visible end
   local list = {}
   local search = state.search:lower()
+  local f = Filters()
   for _, row in ipairs(allRows) do
     if (not state.classID or row.classID == state.classID)
       and (not state.subClassID or row.subClassID == state.subClassID)
-      and (search == "" or row.lname:find(search, 1, true)) then
+      and (search == "" or row.lname:find(search, 1, true))
+      and PassesFilters(row, f) then
       list[#list + 1] = row
     end
   end
@@ -336,7 +401,9 @@ local function RefreshList()
     end
   end
   win.count:SetText(string.format("%s of %s", ns.Num(#rows), ns.Plural(#allRows, "item")))
-  win.clear:SetEnabled(state.classID ~= nil or state.search ~= "")
+  local filtering = FiltersActive()
+  win.clear:SetEnabled(state.classID ~= nil or state.search ~= "" or filtering)
+  win.filterButton:SetText(filtering and "|cff66ccffFilter *|r" or "Filter")
   list.empty:SetShown(#rows == 0)
   for _, h in ipairs(list.headings) do
     local active = (ns.db.priceSort or "name") == h.key
@@ -393,6 +460,15 @@ local function Build()
   local close = CreateFrame("Button", nil, win, "UIPanelCloseButton")
   close:SetPoint("TOPRIGHT", 2, 2)
 
+  -- top right: the /async settings window
+  local settingsButton = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
+  settingsButton:SetSize(80, 20)
+  settingsButton:SetPoint("RIGHT", close, "LEFT", -2, 0)
+  settingsButton:SetText("Settings")
+  settingsButton:SetScript("OnClick", function()
+    if not AuctionatorSyncFrame or not AuctionatorSyncFrame:IsShown() then ns.ToggleWindow() end
+  end)
+
   -- search
   local search = CreateFrame("EditBox", nil, win, "InputBoxTemplate")
   search:SetSize(240, 20)
@@ -413,6 +489,122 @@ local function Build()
   search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
   win.search = search
 
+  -- Filter: a dropdown panel like the auction house's
+  local filterButton = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
+  filterButton:SetSize(90, 22)
+  filterButton:SetPoint("LEFT", search, "RIGHT", 10, 0)
+  filterButton:SetText("Filter")
+  win.filterButton = filterButton
+
+  local panel = CreateFrame("Frame", nil, filterButton, "BackdropTemplate")
+  panel:SetPoint("TOPLEFT", filterButton, "BOTTOMLEFT", 0, -2)
+  panel:SetWidth(190)
+  panel:SetFrameStrata("FULLSCREEN_DIALOG")
+  panel:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+  panel:SetBackdropColor(0.08, 0.08, 0.1, 0.97)
+  panel:SetBackdropBorderColor(0.4, 0.4, 0.45, 1)
+  panel:EnableMouse(true)
+  panel:Hide()
+  local function Changed()
+    win.list.offset = 0
+    Refresh()
+  end
+  local y = -10
+  local function Header(text)
+    local fs = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    fs:SetPoint("TOPLEFT", 12, y)
+    fs:SetText(text)
+    y = y - 22
+  end
+  local function Check(label, color, get, set)
+    local cb = CreateFrame("CheckButton", nil, panel, "UICheckButtonTemplate")
+    cb:SetSize(22, 22)
+    cb:SetPoint("TOPLEFT", 8, y)
+    local fs = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    fs:SetPoint("LEFT", cb, "RIGHT", 2, 0)
+    fs:SetText(label)
+    if color then fs:SetTextColor(color[1], color[2], color[3]) end
+    cb:SetScript("OnClick", function(self)
+      set(self:GetChecked() and true or false)
+      Changed()
+    end)
+    cb.get = get
+    y = y - 22
+    return cb
+  end
+  panel.checks = {}
+
+  Header("Level Range")
+  local function LevelBox(field, x)
+    local box = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
+    box:SetSize(36, 20)
+    box:SetPoint("TOPLEFT", 18 + x, y)
+    box:SetAutoFocus(false)
+    box:SetNumeric(true)
+    box:SetMaxLetters(3)
+    box:SetScript("OnTextChanged", function(self)
+      local v = tonumber(self:GetText() or "")
+      if Filters()[field] ~= v then
+        Filters()[field] = v
+        Changed()
+      end
+    end)
+    box:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    box:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    return box
+  end
+  panel.minBox = LevelBox("minLevel", 0)
+  local dash = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  dash:SetPoint("TOPLEFT", 64, y - 3)
+  dash:SetText("-")
+  panel.maxBox = LevelBox("maxLevel", 58)
+  y = y - 32
+
+  if HAS_COLLECTION then
+    panel.checks[#panel.checks + 1] = Check("Uncollected Only", nil,
+      function() return Filters().uncollected end, function(on) Filters().uncollected = on or nil end)
+  end
+  if CanUseItem then
+    panel.checks[#panel.checks + 1] = Check("Usable Only", nil,
+      function() return Filters().usable end, function(on) Filters().usable = on or nil end)
+  end
+  y = y - 8
+
+  Header("Rarity")
+  local RARITIES = { { 0, "Poor" }, { 1, "Common" }, { 2, "Uncommon" }, { 3, "Rare" }, { 4, "Epic" }, { 5, "Legendary" } }
+  for _, q in ipairs(RARITIES) do
+    local r, g, b = QualityColor(q[1])
+    panel.checks[#panel.checks + 1] = Check(q[2], { r, g, b },
+      function() return Filters().rarity[q[1]] ~= false end,
+      function(on)
+        if on then Filters().rarity[q[1]] = nil else Filters().rarity[q[1]] = false end
+      end)
+  end
+  panel:SetHeight(-y + 8)
+
+  function panel:Sync()
+    local f = Filters()
+    self.minBox:SetText(f.minLevel and tostring(f.minLevel) or "")
+    self.maxBox:SetText(f.maxLevel and tostring(f.maxLevel) or "")
+    for _, cb in ipairs(self.checks) do cb:SetChecked(cb.get() and true or false) end
+  end
+  -- a click anywhere else closes it
+  panel:SetScript("OnUpdate", function(self)
+    if (IsMouseButtonDown("LeftButton") or IsMouseButtonDown("RightButton"))
+      and not self:IsMouseOver() and not filterButton:IsMouseOver() then
+      self:Hide()
+    end
+  end)
+  filterButton:SetScript("OnClick", function()
+    if panel:IsShown() then panel:Hide() else
+      wipe(usableCache) -- your level / collection may have changed since last time
+      wipe(uncollectedCache)
+      panel:Sync()
+      panel:Show()
+    end
+  end)
+  win.filterPanel = panel
+
   -- above the categories: back to All, search emptied (greyed out while nothing is filtered)
   local clear = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
   clear:SetSize(SIDE_W, 22)
@@ -420,8 +612,10 @@ local function Build()
   clear:SetText("Clear filters")
   clear:SetScript("OnClick", function()
     state.classID, state.subClassID = nil, nil
+    ns.db.priceFilters = { rarity = {} }
     search:SetText("")
     search:ClearFocus()
+    if win.filterPanel:IsShown() then win.filterPanel:Sync() end
     win.list.offset, win.side.offset = 0, 0
     Refresh()
   end)

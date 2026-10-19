@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.15.0
+- **Price List Filter**, like the auction house's: a **Filter** button next to the search box opens a panel with **Level Range** (min / max required level), **Uncollected Only** (gear whose appearance this account hasn't collected), **Usable Only** (items this character can use), and **Rarity** (Poor to Legendary, in their colours, all ticked to start). The button reads "Filter *" in blue while any of these are active, and **Clear filters** resets them along with the category and search. Uncollected Only and Usable Only only appear if the game client supports them.
+- The name book now also keeps each item's required level (needed for Level Range). Items saved before this version get it added once, behind the usual loading bar.
+- **Settings** button at the top right of the Price List opens the `/async` window.
+
 ## 0.14.0
 - **Minimap button:** left-click opens the settings, right-click the Price List, drag to move. It works with minimap-button collector addons (LibDBIcon). **Show minimap button** in `/async` hides or shows it.
 - The addon list button at the top of the minimap opens AuctionatorSync too (left-click settings, right-click Price List).
