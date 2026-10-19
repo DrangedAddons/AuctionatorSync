@@ -373,7 +373,12 @@ local function RefreshOnline()
       row.name:SetText(data.name)
       row.version:SetText("|cff" .. (data.versionColor or "999999") .. "v" .. tostring(data.version) .. "|r")
       row.status:SetText("|cff" .. data.color .. data.text .. "|r")
-      row.last:SetText(data.lastSync and ("|cff" .. SyncAgeColor(data.lastSync) .. Ago(data.lastSync) .. "|r") or "|cff808080-|r")
+      if data.lastSync then
+        row.last:SetText("|cff" .. SyncAgeColor(data.lastSync) .. Ago(data.lastSync) .. "|r")
+      else
+        -- no time to show: the host holds the master list, so it's in sync by definition
+        row.last:SetText(data.host and "|cff33ff99host|r" or "|cff808080-|r")
+      end
       row:Show()
     end
     for i = #rows + 1, #t.rows do t.rows[i]:Hide() end

@@ -89,6 +89,12 @@ end
 function ns.ShowLog(show)
   if not win then Build() end
   if show then
+    -- opening with the /async window up: sit to its left, top edges level, touching
+    local main = AuctionatorSyncFrame
+    if main and main:IsShown() and not win:IsShown() then
+      win:ClearAllPoints()
+      win:SetPoint("TOPRIGHT", main, "TOPLEFT", 0, 0)
+    end
     if win:IsShown() then win:GetScript("OnShow")() else win:Show() end
   else
     win:Hide()

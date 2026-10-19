@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.7
+- When there's no last-sync time to show for the host, the Last sync column says **host** (in green): the host holds the master list, so it's in sync by definition.
+- The log window opens to the left of the `/async` window (its top-right corner against the `/async` window's top-left) instead of underneath it. It can still be dragged anywhere.
+
 ## 0.12.6
 - **Click a column heading for a dropdown** with its sort choices and, on Version and Status, its filters, each ticked when active: Player - A to Z / Z to A; Version - Newest first / Oldest first, then All / Up to date / Old; Status - In sync first / Not in sync first, then All / In sync / Not in sync; Last sync - Most recent first / Longest ago first. Each heading has a small arrow to show it opens a menu; the sorted column's heading is white, a filtered one shows the filter in blue.
 - No more tooltips on the column headings, and the separate filter arrows are gone.
