@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.2
+- **Filters moved into the column headings; the Show dropdown is gone.** Click a heading to sort (again to reverse), as before. **Version** and **Status** also have a small arrow next to the name that opens a filter: Version - All / Up to date / Old (older than the newest version anyone online runs); Status - All / In sync / Not in sync. Each choice shows how many players it matches, with a tick on the current one. While a filter is on, the heading shows it in blue ("Old", "Not in sync"); both filters can be on at once.
+- The host is always pinned to the top of the list, whichever column you sort by.
+
 ## 0.12.1
 - The online list's filter is a dropdown: "Show: All" with an arrow; click it for All / In sync / Not in sync / Needs update, each with how many players it shows, and a tick by the current one. Clicking anywhere else closes it.
 
