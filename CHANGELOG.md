@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.6
+- **Click a column heading for a dropdown** with its sort choices and, on Version and Status, its filters, each ticked when active: Player - A to Z / Z to A; Version - Newest first / Oldest first, then All / Up to date / Old; Status - In sync first / Not in sync first, then All / In sync / Not in sync; Last sync - Most recent first / Longest ago first. Each heading has a small arrow to show it opens a menu; the sorted column's heading is white, a filtered one shows the filter in blue.
+- No more tooltips on the column headings, and the separate filter arrows are gone.
+
 ## 0.12.5
 - **Last sync** is coloured too: **green** under 10 minutes ago, **yellow** under an hour, **red** under a day, **grey** older or unknown.
 - The heading filter lists colour their choices to match (Up to date / In sync green, Old / Not in sync red).

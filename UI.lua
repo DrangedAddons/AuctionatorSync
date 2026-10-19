@@ -172,16 +172,21 @@ local ROW_H = 18
 -- x offsets of the columns (Player starts at 20, after the host crown)
 local COL_VERSION, COL_STATUS, COL_LAST = 150, 226, 330
 
--- Sorting: click a heading; click it again to reverse. The host always stays at the top.
+-- Click a heading for its menu: the sort choices, and (Version, Status) the filters. The host
+-- always stays at the top. desc = reverse of the column's natural order.
 local COLUMNS = {
-  { key = "name", label = "Player", x = 20 },
-  { key = "version", label = "Version", x = COL_VERSION },
-  { key = "rank", label = "Status", x = COL_STATUS },
-  { key = "lastSync", label = "Last sync", x = COL_LAST },
+  { key = "name", label = "Player", x = 20,
+    sorts = { { label = "A to Z", desc = false }, { label = "Z to A", desc = true } } },
+  { key = "version", label = "Version", x = COL_VERSION,
+    sorts = { { label = "Newest first", desc = true }, { label = "Oldest first", desc = false } } },
+  { key = "rank", label = "Status", x = COL_STATUS,
+    sorts = { { label = "In sync first", desc = false }, { label = "Not in sync first", desc = true } } },
+  { key = "lastSync", label = "Last sync", x = COL_LAST,
+    sorts = { { label = "Most recent first", desc = false }, { label = "Longest ago first", desc = true } } },
 }
 
--- Filters, on the Version and Status headings (the small arrow next to the name). While one is
--- on, the heading shows it instead of the column name, in blue.
+-- Filters, in the Version and Status heading menus. While one is on, the heading shows it
+-- instead of the column name, in blue.
 local HEADING_FILTERS = {
   version = { db = "filterVersion", options = {
     { key = "all", label = "All" },
@@ -346,7 +351,7 @@ local function RefreshOnline()
     local spec = HEADING_FILTERS[h.key]
     local o = spec and ActiveOption(spec)
     local filtered = o and o.key ~= "all"
-    h.text:SetText((filtered and o.label or h.label) .. (sorted and (ns.db.onlineSortDesc and " v" or " ^") or ""))
+    h.text:SetText(filtered and o.label or h.label)
     if filtered then
       h.text:SetTextColor(0.4, 0.8, 1)
     elseif sorted then
@@ -354,7 +359,7 @@ local function RefreshOnline()
     else
       h.text:SetTextColor(1, 0.82, 0)
     end
-    if h.filterArrow then h.filterArrow:SetVertexColor(filtered and 0.4 or 1, filtered and 0.8 or 1, 1) end
+    h.arrow:SetVertexColor(filtered and 0.4 or 1, filtered and 0.8 or 1, filtered and 1 or 1)
   end
 
   local bottom -- the lowest thing shown, to size the window
@@ -506,10 +511,11 @@ local function Build()
   header:SetScript("OnLeave", GameTooltip_Hide)
   frame.onlineHeader = header
 
-  -- One small popup menu, shared by the heading filters. Built by hand: the game's own dropdown
-  -- menus aren't reliable on Forever. A click anywhere else closes it.
+  -- The heading menu: sort choices, then (Version, Status) filters, each with a tick on the
+  -- current one. Built by hand: the game's own dropdown menus aren't reliable on Forever.
+  -- A click anywhere else closes it.
   local menu = CreateFrame("Frame", nil, frame, "BackdropTemplate")
-  menu:SetWidth(130)
+  menu:SetWidth(150)
   menu:SetFrameStrata("FULLSCREEN_DIALOG")
   menu:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
   menu:SetBackdropColor(0.08, 0.08, 0.1, 0.97)
@@ -517,16 +523,17 @@ local function Build()
   menu:EnableMouse(true)
   menu:Hide()
   menu.items = {}
+  local ITEM_H = 18
   local function MenuItem(i)
     local item = menu.items[i]
     if item then return item end
     item = CreateFrame("Button", nil, menu)
-    item:SetHeight(18)
-    item:SetPoint("TOPLEFT", 1, -1 - (i - 1) * 18)
+    item:SetHeight(ITEM_H)
+    item:SetPoint("TOPLEFT", 1, -1 - (i - 1) * ITEM_H)
     item:SetPoint("RIGHT", -1, 0)
-    local hl = item:CreateTexture(nil, "HIGHLIGHT")
-    hl:SetAllPoints()
-    hl:SetColorTexture(1, 0.82, 0, 0.18)
+    item.hl = item:CreateTexture(nil, "HIGHLIGHT")
+    item.hl:SetAllPoints()
+    item.hl:SetColorTexture(1, 0.82, 0, 0.18)
     item.check = item:CreateTexture(nil, "OVERLAY")
     item.check:SetSize(14, 14)
     item.check:SetPoint("LEFT", 4, 0)
@@ -534,32 +541,38 @@ local function Build()
     item.text = item:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     item.text:SetPoint("LEFT", 22, 0)
     item:SetScript("OnClick", function(self)
-      ns.db[self.spec.db] = self.option.key
+      if not self.onClick then return end
+      self.onClick()
       menu:Hide()
       Refresh()
     end)
     menu.items[i] = item
     return item
   end
-  function menu:Open(anchor, spec)
+  -- entries: { title = "Sort" } | { label, checked, onClick }
+  function menu:Open(anchor, entries)
     if self:IsShown() and self.anchor == anchor then self:Hide(); return end
     self.anchor = anchor
-    local current = ActiveOption(spec).key
-    for i, o in ipairs(spec.options) do
-      local n = 0
-      for _, row in ipairs(frame.onlineAll or {}) do
-        if not o.test or o.test(row) then n = n + 1 end
-      end
+    for i, e in ipairs(entries) do
       local item = MenuItem(i)
-      item.spec, item.option = spec, o
-      item.text:SetText((o.color and ("|cff" .. o.color .. o.label .. "|r") or o.label) .. "  |cff999999" .. n .. "|r")
-      item.check:SetShown(o.key == current)
+      item.onClick = e.onClick
+      if e.title then
+        item.text:SetText("|cff999999" .. e.title .. "|r")
+        item.text:SetPoint("LEFT", 6, 0)
+        item.check:Hide()
+        item.hl:Hide()
+      else
+        item.text:SetText(e.label)
+        item.text:SetPoint("LEFT", 22, 0)
+        item.check:SetShown(e.checked and true or false)
+        item.hl:Show()
+      end
       item:Show()
     end
-    for i = #spec.options + 1, #self.items do self.items[i]:Hide() end
-    self:SetHeight(#spec.options * 18 + 2)
+    for i = #entries + 1, #self.items do self.items[i]:Hide() end
+    self:SetHeight(#entries * ITEM_H + 2)
     self:ClearAllPoints()
-    self:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -2)
+    self:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", -4, -2)
     self:Show()
   end
   menu:SetScript("OnUpdate", function(self)
@@ -568,7 +581,36 @@ local function Build()
       self:Hide()
     end
   end)
-  frame.filterMenu = menu
+  frame.headingMenu = menu
+
+  local function HeadingMenu(col)
+    local entries = { { title = "Sort" } }
+    local sortKey, sortDesc = ns.db.onlineSort or "rank", ns.db.onlineSortDesc and true or false
+    for _, so in ipairs(col.sorts) do
+      entries[#entries + 1] = {
+        label = so.label,
+        checked = sortKey == col.key and sortDesc == so.desc,
+        onClick = function() ns.db.onlineSort, ns.db.onlineSortDesc = col.key, so.desc end,
+      }
+    end
+    local spec = HEADING_FILTERS[col.key]
+    if spec then
+      entries[#entries + 1] = { title = "Show" }
+      local current = ActiveOption(spec).key
+      for _, o in ipairs(spec.options) do
+        local n = 0
+        for _, row in ipairs(frame.onlineAll or {}) do
+          if not o.test or o.test(row) then n = n + 1 end
+        end
+        entries[#entries + 1] = {
+          label = (o.color and ("|cff" .. o.color .. o.label .. "|r") or o.label) .. "  |cff999999" .. n .. "|r",
+          checked = o.key == current,
+          onClick = function() ns.db[spec.db] = o.key end,
+        }
+      end
+    end
+    return entries
+  end
 
   -- folded: one summary line
   frame.peers = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -595,44 +637,14 @@ local function Build()
     h.text = h:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     h.text:SetPoint("LEFT")
     h.key, h.label = col.key, col.label
-    h:SetScript("OnClick", function(self)
-      if (ns.db.onlineSort or "rank") == self.key then
-        ns.db.onlineSortDesc = not ns.db.onlineSortDesc
-      else
-        ns.db.onlineSort, ns.db.onlineSortDesc = self.key, false
-      end
-      Refresh()
-    end)
-    h:SetScript("OnEnter", function(self)
-      GameTooltip:SetOwner(self, "ANCHOR_TOP")
-      GameTooltip:SetText("Click to sort by " .. self.label:lower() .. "; again to reverse")
-      if HEADING_FILTERS[self.key] then
-        GameTooltip:AddLine("The arrow filters: " .. ActiveOption(HEADING_FILTERS[self.key]).label:lower() .. " shown.", 1, 1, 1)
-      end
-      GameTooltip:Show()
-    end)
-    h:SetScript("OnLeave", GameTooltip_Hide)
-    local spec = HEADING_FILTERS[col.key]
-    if spec then
-      local arrow = CreateFrame("Button", nil, t.head)
-      arrow:SetSize(14, 14)
-      arrow:SetPoint("LEFT", h.text, "RIGHT", 2, 0)
-      local tex = arrow:CreateTexture(nil, "ARTWORK")
-      tex:SetAllPoints()
-      tex:SetTexture("Interface\\Buttons\\Arrow-Down-Up")
-      h.filterArrow = tex
-      local hl = arrow:CreateTexture(nil, "HIGHLIGHT")
-      hl:SetAllPoints()
-      hl:SetTexture("Interface\\Buttons\\Arrow-Down-Up")
-      hl:SetBlendMode("ADD")
-      arrow:SetScript("OnClick", function(self) frame.filterMenu:Open(self, spec) end)
-      arrow:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:SetText("Filter by " .. col.label:lower())
-        GameTooltip:Show()
-      end)
-      arrow:SetScript("OnLeave", GameTooltip_Hide)
-    end
+    local hl = h:CreateTexture(nil, "HIGHLIGHT")
+    hl:SetAllPoints()
+    hl:SetColorTexture(1, 0.82, 0, 0.12)
+    h.arrow = h:CreateTexture(nil, "ARTWORK")
+    h.arrow:SetSize(12, 12)
+    h.arrow:SetPoint("LEFT", h.text, "RIGHT", 1, 0)
+    h.arrow:SetTexture("Interface\\Buttons\\Arrow-Down-Up")
+    h:SetScript("OnClick", function(self) frame.headingMenu:Open(self, HeadingMenu(col)) end)
     t.headings[#t.headings + 1] = h
   end
   t.empty = t:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
