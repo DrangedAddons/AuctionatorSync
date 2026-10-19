@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.13.2
+- Price List: prices are split into aligned gold, silver and copper parts, so every gold amount lines up under the others, likewise silver and copper. Silver and copper always show two digits (12g 05s 00c); under 1 gold, the gold slot is left empty.
+
 ## 0.13.1
 - Price List: tidied the top row. The search box lines up with the list, the item count sits at the far right, and the overlapping note is gone (hover the **Available** heading for what that column means).
 

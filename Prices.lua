@@ -157,6 +157,10 @@ local function QualityColor(q)
   return 1, 1, 1
 end
 
+local COIN_GOLD = "|TInterface\\MoneyFrame\\UI-GoldIcon:0:0:2:0|t"
+local COIN_SILVER = "|TInterface\\MoneyFrame\\UI-SilverIcon:0:0:2:0|t"
+local COIN_COPPER = "|TInterface\\MoneyFrame\\UI-CopperIcon:0:0:2:0|t"
+
 local function Money(copper)
   if GetMoneyString then return GetMoneyString(copper, true) end
   if C_CurrencyInfo and C_CurrencyInfo.GetCoinTextureString then return C_CurrencyInfo.GetCoinTextureString(copper) end
@@ -310,7 +314,10 @@ local function RefreshList()
       line.icon:SetTexture(row.icon)
       line.name:SetText(row.name .. (row.extra and ("  |cff999999" .. row.extra .. "|r") or ""))
       line.name:SetTextColor(QualityColor(row.quality))
-      line.price:SetText(Money(row.price))
+      local g, sv, c = math.floor(row.price / 10000), math.floor(row.price / 100) % 100, row.price % 100
+      line.gold:SetText(g > 0 and (ns.Num(g) .. COIN_GOLD) or "")
+      line.silver:SetText(string.format("%02d", sv) .. COIN_SILVER)
+      line.copper:SetText(string.format("%02d", c) .. COIN_COPPER)
       line.avail:SetText(row.avail and ns.Num(row.avail) or "|cff808080-|r")
       line.seen:SetText("|cff" .. AgeColor(row.seen) .. Ago(row.seen) .. "|r")
       line:Show()
@@ -510,9 +517,14 @@ local function Build()
     local hl = l:CreateTexture(nil, "HIGHLIGHT")
     hl:SetAllPoints()
     hl:SetColorTexture(1, 0.82, 0, 0.12)
-    l.price = l:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    l.price:SetPoint("RIGHT", l, "LEFT", COLS[1].x + COLS[1].w - 2, 0)
-    l.price:SetJustifyH("RIGHT")
+    -- price in three fixed, right-aligned parts so gold, silver and copper each line up
+    local priceRight = COLS[1].x + COLS[1].w - 2
+    for _, part in ipairs({ { "copper", 0 }, { "silver", 30 }, { "gold", 60 } }) do
+      local fs = l:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+      fs:SetPoint("RIGHT", l, "LEFT", priceRight - part[2], 0)
+      fs:SetJustifyH("RIGHT")
+      l[part[1]] = fs
+    end
     l.icon = l:CreateTexture(nil, "ARTWORK")
     l.icon:SetSize(16, 16)
     l.icon:SetPoint("LEFT", COLS[2].x + 2, 0)
