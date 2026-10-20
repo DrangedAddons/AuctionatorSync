@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.2
+- **Whoever just scanned is in sync.** The master list is now the version holding the newest price (equally new: the one most players hold), so after a scan the scanner leads and shows "in sync", instead of being outvoted until the others caught up. Before, a long share could even make the scanner "re-sync" back to the older list.
+- New status **receiving updates** (yellow): a player whose prices are still arriving shows this instead of "not in sync yet"; the self-repair also waits while prices are arriving.
+- **Progress in the log:** big transfers log every batch on both ends: "Grove -> everyone: sent 1,000 / 1,876 prices (scan prices, 53%)" once a batch has actually gone out, and "Fred Dingo <- Grove: 1,000 / 1,876 prices (scan prices, 53%)" as it arrives. This covers scan shares, handshake pieces and replies, and share-outs.
+- Prices travel in batches of 500 instead of 1,500, so progress moves in finer steps.
+
 ## 0.16.1
 - The number of hosts a big sync uses now adapts: at most half of the in-sync players who aren't hosting anyone (so others logging in at the same time still find a free one), at least 16 sections per host, and never more than 6. Small groups end up much as before; busy guilds can spread a big sync wider.
 

@@ -114,7 +114,8 @@ local function RouteName(target)
 end
 
 -- target = { kind = "GUILD" | "CHANNEL" } | { kind = "WHISPER", name } | { kind = "BN", id, name }
-function ns.Send(target, msg, prio, id)
+-- onSent: called once the message's last chunk has actually gone out (the throttle queues them).
+function ns.Send(target, msg, prio, id, onSent)
   if not target then return end
   msg.v = ns.VERSION
   msg.p = ns.PROTOCOL
@@ -127,14 +128,15 @@ function ns.Send(target, msg, prio, id)
   prio = prio or "NORMAL"
   for i = 1, total do
     local chunk = id .. ":" .. i .. ":" .. total .. ":" .. text:sub((i - 1) * size + 1, i * size)
+    local cb = (i == total and onSent) and function() onSent() end or nil
     if target.kind == "BN" then
-      CTL:BNSendGameData(prio, ns.PREFIX, chunk, "WHISPER", target.id, "AucSync" .. target.id)
+      CTL:BNSendGameData(prio, ns.PREFIX, chunk, "WHISPER", target.id, "AucSync" .. target.id, cb)
     elseif target.kind == "WHISPER" then
-      CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "WHISPER", target.name, "AucSync" .. target.name)
+      CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "WHISPER", target.name, "AucSync" .. target.name, cb)
     elseif target.kind == "CHANNEL" then
-      CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "CHANNEL", tostring(target.channel), "AucSyncChannel")
+      CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "CHANNEL", tostring(target.channel), "AucSyncChannel", cb)
     else
-      CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "GUILD", nil, "AucSyncGuild")
+      CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "GUILD", nil, "AucSyncGuild", cb)
     end
   end
   return id
@@ -144,16 +146,24 @@ end
 -- only reach that way. With discover = true (login), also every online friend and Battle.net
 -- friend, since we don't know yet who has the addon. The same id goes on every route, so a
 -- player reached twice only handles it once.
-function ns.Broadcast(msg, prio, discover)
+function ns.Broadcast(msg, prio, discover, onSent)
   local id = NextId()
+  -- onSent fires once, when the first route has actually sent it
+  local fired = false
+  local function Sent()
+    if onSent and not fired then
+      fired = true
+      onSent()
+    end
+  end
   local covered = {}
   local routes = {}
   if IsInGuild() then
-    ns.Send({ kind = "GUILD" }, msg, prio, id)
+    ns.Send({ kind = "GUILD" }, msg, prio, id, Sent)
     routes[#routes + 1] = "guild"
   end
   if ns.channelId then
-    ns.Send({ kind = "CHANNEL", channel = ns.channelId }, msg, prio, id)
+    ns.Send({ kind = "CHANNEL", channel = ns.channelId }, msg, prio, id, Sent)
     routes[#routes + 1] = "channel"
   end
   for short, peer in pairs(ns.peers) do
@@ -163,7 +173,7 @@ function ns.Broadcast(msg, prio, discover)
   local function Direct(target, short)
     if covered[short] or ns.IsMe(target.name) then return end
     covered[short] = true
-    ns.Send(target, msg, prio, id)
+    ns.Send(target, msg, prio, id, Sent)
     direct = direct + 1
   end
   for short, peer in pairs(ns.peers) do

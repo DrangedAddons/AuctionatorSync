@@ -33,7 +33,7 @@
 --                           "fwd" (host -> everyone: what a newcomer brought), nil = scan changes
 local _, ns = ...
 
-local BATCH = 1500          -- prices per DATA message
+local BATCH = 500           -- prices per DATA message (smaller = finer progress in the log)
 local HELLO_WAIT = 5        -- seconds to collect answers to a HELLO
 local JOIN_TIMEOUT = 180    -- seconds without hearing from the host before trying again
 local HEARTBEAT = 60        -- seconds between STATE heartbeats
@@ -297,12 +297,18 @@ end
 local transferCounter = 0
 
 -- One transfer of BATCH-sized DATA messages, the last marked fin. target = nil -> everyone.
--- extra: fields copied onto every message (a handshake piece's bk / pc / tot).
+-- extra: fields copied onto every message (a handshake piece's bk / pc). Every message carries
+-- tot (the transfer's size), and each batch logs when it has actually been sent.
+local KIND_WORDS = { join = "handshake piece", reply = "handshake reply", fwd = "share-out" }
+
 function ns.SendEntries(target, list, prio, k, extra)
   local realm = ns.RealmKey()
   transferCounter = transferCounter + 1
   local x = transferCounter
   local n, i = #list, 1
+  local label = string.format("%s -> %s", ns.MyName(), target and (target.name or "?") or "everyone")
+  local what = KIND_WORDS[k] or "scan prices"
+  local batches = math.max(1, math.ceil(n / BATCH))
   repeat
     local last = math.min(i + BATCH - 1, n)
     local base = math.huge
@@ -316,9 +322,14 @@ function ns.SendEntries(target, list, prio, k, extra)
       e[#e + 1] = it[3] or 0
       e[#e + 1] = it[4] - base
     end
-    local msg = { t = "DATA", r = realm, x = x, e = e, b = base, fin = (last >= n) or nil, k = k }
+    local msg = { t = "DATA", r = realm, x = x, e = e, b = base, fin = (last >= n) or nil, k = k, tot = n }
     for field, value in pairs(extra or {}) do msg[field] = value end
-    if target then ns.Send(target, msg, prio) else ns.Broadcast(msg, prio) end
+    local sentSoFar = last
+    local onSent = n > 0 and batches > 1 and function()
+      ns.Log("%s: sent %s / %s (%s, %d%%)", label, ns.Num(sentSoFar), ns.Plural(n, "price"), what,
+        floor(sentSoFar / n * 100))
+    end or nil
+    if target then ns.Send(target, msg, prio, nil, onSent) else ns.Broadcast(msg, prio, nil, onSent) end
     i = last + 1
   until i > n
 end
@@ -379,7 +390,8 @@ ns.HostingCount = HostingCount
 local stateTimer
 local function StateMsg(t)
   return { t = t or "STATE", r = ns.RealmKey(), st = ns.state, d = ns.Fingerprint(), os = ns.onlineSince,
-    w = ns.syncingWith, ls = ns.LastSync(), nt = newestTs, hl = HostingCount(), pg = ns.syncProgress }
+    w = ns.syncingWith, ls = ns.LastSync(), nt = newestTs, hl = HostingCount(), pg = ns.syncProgress,
+    rx = ns.Receiving and ns.Receiving() or 0 }
 end
 
 -- Tell everyone our state/fingerprint (debounced: several changes in a row send one message).
@@ -401,9 +413,10 @@ local function Compatible(peer)
   return (peer.proto or 1) >= ns.PROTOCOL and not peer.otherRealm
 end
 
--- The master list: the fingerprint most ready players hold. Ties: the one with the newer newest
--- price, then the smaller fingerprint text, so every player picks the same one. "In sync" means
--- holding it. Nobody owns it: two versions are simply merged by the next handshake.
+-- The master list: the version holding the newest price (whoever just scanned leads, and the
+-- rest catch up as the share arrives). Equally new: the one most ready players hold, then the
+-- smaller fingerprint text, so every player picks the same one. "In sync" means holding it.
+-- Nobody owns it: two versions are simply merged by the next handshake.
 function ns.Master()
   local votes, newest = {}, {}
   local function Vote(d, nt)
@@ -417,8 +430,8 @@ function ns.Master()
   end
   local best
   for d, n in pairs(votes) do
-    if not best or n > votes[best] or (n == votes[best]
-      and (newest[d] > newest[best] or (newest[d] == newest[best] and d < best))) then
+    if not best or newest[d] > newest[best] or (newest[d] == newest[best]
+      and (n > votes[best] or (n == votes[best] and d < best))) then
       best = d
     end
   end
@@ -500,6 +513,15 @@ local SWARM_MAX = 6          -- never more hosts than this (past it the newcomer
 
 local join -- { verbose, probe, pieces = { [id] = piece }, bad = { [peer] = true }, changed, nextId }
 local transfers = {}
+
+-- Price transfers arriving right now (not counting handshake pieces we're hosting).
+function ns.Receiving()
+  local n = 0
+  for _, tr in pairs(transfers) do
+    if tr.kind ~= "join" then n = n + 1 end
+  end
+  return n
+end
 
 local function HostNames()
   local names, seen = {}, {}
@@ -735,6 +757,7 @@ local function NoteState(peer, msg, isHello)
   local was, wasD, wasOffline, wasHl = peer.st, peer.d, peer.lastHeard == nil, peer.hl or 0
   peer.st, peer.d, peer.os, peer.w = msg.st, msg.d, tonumber(msg.os), msg.w
   peer.ls, peer.nt, peer.hl, peer.pg = tonumber(msg.ls), tonumber(msg.nt), tonumber(msg.hl) or 0, tonumber(msg.pg)
+  peer.rx = tonumber(msg.rx) or 0
   peer.lastHeard = ns.Now()
   if isHello or wasOffline then
     ns.Log("%s came online (v%s)", peer.name, tostring(peer.version))
@@ -824,6 +847,7 @@ function ns.OnMessage(msg, peer)
     if not tr then
       tr = { kind = msg.k or "update", changed = 0, received = 0, brought = {}, theirs = {} }
       transfers[tkey] = tr
+      if tr.kind ~= "join" then ns.AnnounceState() end -- now "receiving updates"
       if tr.kind == "join" then
         local set = {}
         for _, s in ipairs(type(msg.bk) == "table" and msg.bk or {}) do set[tonumber(s)] = true end
@@ -851,6 +875,11 @@ function ns.OnMessage(msg, peer)
     if piece then
       piece.received, piece.tot = tr.received, tonumber(msg.tot) or piece.tot
       UpdateProgress()
+    end
+    local tot = tonumber(msg.tot)
+    if tot and tot > BATCH then
+      ns.Log("%s <- %s: %s / %s (%s, %d%%)", ns.MyName(), peer.name, ns.Num(tr.received),
+        ns.Plural(tot, "price"), KIND_WORDS[tr.kind] or "scan prices", floor(tr.received / tot * 100))
     end
     if tr.timer then tr.timer:Cancel() end
     if not msg.fin then
@@ -950,7 +979,7 @@ C_Timer.NewTicker(30, function()
   -- this side's different prices into the master list, so nothing is lost.
   local master = ns.Master()
   if ns.state == "ready" and not join and master and master ~= ns.Fingerprint()
-    and not ns.IsScanning() and not next(pending) then
+    and not ns.IsScanning() and not next(pending) and ns.Receiving() == 0 then
     mismatchSince = mismatchSince or ns.Now()
     if ns.Now() - mismatchSince >= HEAL_AFTER then
       mismatchSince = nil
@@ -1094,8 +1123,9 @@ end)
 -- handshaking, waiting, not in sync, needs update.
 function ns.StatusRows()
   local master = ns.Master()
-  local function Text(st, d, with, pg, hl, compatible)
+  local function Text(st, d, with, pg, hl, compatible, rx)
     if not compatible then return "needs update", "808080", 5 end
+    if st == "ready" and d ~= master and (rx or 0) > 0 then return "receiving updates", "ffd100", 2 end
     if st == "syncing" then
       return "handshaking" .. (with and (" with " .. with) or "") .. (pg and (" (" .. pg .. "%)") or ""), "ffd100", 2
     end
@@ -1107,12 +1137,13 @@ function ns.StatusRows()
   end
   local rows = {}
   local myHl = HostingCount()
-  local myText, myColor, myRank = Text(ns.state, ns.Fingerprint(), ns.syncingWith, ns.syncProgress, myHl, true)
+  local myText, myColor, myRank = Text(ns.state, ns.Fingerprint(), ns.syncingWith, ns.syncProgress, myHl, true,
+    ns.Receiving())
   rows[#rows + 1] = { name = ns.MyName(), version = ns.VERSION, text = myText, color = myColor, rank = myRank,
     lastSync = ns.LastSync(), newest = newestTs > 0 and newestTs or nil, host = myHl > 0, me = true }
   for _, peer in pairs(ns.peers) do
     if ns.IsPeerOnline(peer) and not peer.otherRealm then
-      local t, c, rank = Text(peer.st, peer.d, peer.w, peer.pg, peer.hl, Compatible(peer))
+      local t, c, rank = Text(peer.st, peer.d, peer.w, peer.pg, peer.hl, Compatible(peer), peer.rx)
       rows[#rows + 1] = { name = peer.name, version = peer.version, text = t, color = c, rank = rank,
         lastSync = peer.ls, newest = peer.nt, host = (peer.hl or 0) > 0 }
     end
