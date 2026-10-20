@@ -2,7 +2,7 @@
 ## Title: AuctionatorSync
 ## Notes: Auction house price sync between players with AuctionatorSync installed. New auction data is synced and shared automatically whenever someone views or scans the auction house and discovers new prices. Browse the auction house listings at any time (/ah).
 ## Author: Dranged
-## Version: 0.16.2
+## Version: 0.17.0
 ## Dependencies: Auctionator
 ## X-DrangedAddons-Games: _classic_beta_, _forever_
 ## SavedVariables: AuctionatorSyncDB
@@ -20,5 +20,6 @@ Comm.lua
 Sync.lua
 UI.lua
 Log.lua
+Monitor.lua
 Prices.lua
 Extras.lua

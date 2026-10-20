@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.17.0
+- **Sync Monitor:** a torrent-client style window that opens alongside the log (and closes with it), docked beside it.
+  - Top line: the master list (short fingerprint), how many prices this character has, when the newest price was seen, and how many are online.
+  - One row per player who is doing something right now: **Activity** (handshaking, looking for hosts, receiving, sharing, hosting, or a mix), a **Progress** bar, **Hosts** (how many hosts their handshake is pulling from), **Hosting** (how many handshakes they're serving) and **Syncing to** (the master list version they're catching up with).
+  - **Transfers on this character:** each handshake piece (host, sections, prices so far) and each batch transfer in or out, with progress and a time-left estimate.
+  - Everyone else is compacted underneath: **In sync**, **Not in sync yet**, and **Can't sync (old version)**.
+- Players share a little more in their status (hosts in use, target master list, receive and send progress) so their rows can show it. Everyone needs 0.17.0 for other players' rows to fill in fully.
+
 ## 0.16.2
 - **Whoever just scanned is in sync.** The master list is now the version holding the newest price (equally new: the one most players hold), so after a scan the scanner leads and shows "in sync", instead of being outvoted until the others caught up. Before, a long share could even make the scanner "re-sync" back to the older list.
 - New status **receiving updates** (yellow): a player whose prices are still arriving shows this instead of "not in sync yet"; the self-repair also waits while prices are arriving.

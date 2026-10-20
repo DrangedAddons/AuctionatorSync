@@ -140,7 +140,8 @@ local function AttachedTo(frame, target)
   end
   return false
 end
-local WINDOWS = { "AuctionatorSyncFrame", "AuctionatorSyncPriceListFrame", "AuctionatorSyncLogFrame" }
+local WINDOWS = { "AuctionatorSyncFrame", "AuctionatorSyncPriceListFrame", "AuctionatorSyncLogFrame",
+  "AuctionatorSyncMonitorFrame" }
 
 function ns.PlaceWindow(win)
   local others = {}

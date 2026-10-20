@@ -72,6 +72,7 @@ local function Build()
   grip:SetScript("OnMouseDown", function() win:StartSizing("BOTTOMRIGHT") end)
   grip:SetScript("OnMouseUp", function() win:StopMovingOrSizing() end)
 
+  win:HookScript("OnHide", function() ns.ShowMonitor(false) end) -- and closes with it
   win:SetScript("OnShow", function()
     win.state:SetText(ns.db.verbose and "|cff33ff99recording|r"
       or "|cffff9966not recording - tick Verbose mode in /async|r")
@@ -92,6 +93,7 @@ function ns.ShowLog(show)
     -- dock beside whichever AuctionatorSync windows are open, without overlapping
     if not win:IsShown() then ns.PlaceWindow(win) end
     if win:IsShown() then win:GetScript("OnShow")() else win:Show() end
+    ns.ShowMonitor(true) -- the Sync Monitor opens alongside the log
   else
     win:Hide()
   end

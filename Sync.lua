@@ -300,6 +300,10 @@ local transferCounter = 0
 -- extra: fields copied onto every message (a handshake piece's bk / pc). Every message carries
 -- tot (the transfer's size), and each batch logs when it has actually been sent.
 local KIND_WORDS = { join = "handshake piece", reply = "handshake reply", fwd = "share-out" }
+ns.KIND_WORDS = KIND_WORDS
+
+-- Transfers we're sending right now (for the Sync Monitor): { to, kind, tot, sent, started }
+ns.outgoing = {}
 
 function ns.SendEntries(target, list, prio, k, extra)
   local realm = ns.RealmKey()
@@ -309,6 +313,13 @@ function ns.SendEntries(target, list, prio, k, extra)
   local label = string.format("%s -> %s", ns.MyName(), target and (target.name or "?") or "everyone")
   local what = KIND_WORDS[k] or "scan prices"
   local batches = math.max(1, math.ceil(n / BATCH))
+  local out
+  if n > 0 then
+    out = { to = target and (target.name or "?") or "everyone", kind = k, tot = n, sent = 0, started = ns.Now() }
+    ns.outgoing[out] = true
+    -- forget it if the throttle never reports the last batch (e.g. a disconnect)
+    C_Timer.After(900, function() ns.outgoing[out] = nil end)
+  end
   repeat
     local last = math.min(i + BATCH - 1, n)
     local base = math.huge
@@ -325,9 +336,14 @@ function ns.SendEntries(target, list, prio, k, extra)
     local msg = { t = "DATA", r = realm, x = x, e = e, b = base, fin = (last >= n) or nil, k = k, tot = n }
     for field, value in pairs(extra or {}) do msg[field] = value end
     local sentSoFar = last
-    local onSent = n > 0 and batches > 1 and function()
-      ns.Log("%s: sent %s / %s (%s, %d%%)", label, ns.Num(sentSoFar), ns.Plural(n, "price"), what,
-        floor(sentSoFar / n * 100))
+    local onSent = out and function()
+      out.sent = math.max(out.sent, sentSoFar)
+      if batches > 1 then
+        ns.Log("%s: sent %s / %s (%s, %d%%)", label, ns.Num(sentSoFar), ns.Plural(n, "price"), what,
+          floor(sentSoFar / n * 100))
+      end
+      if out.sent >= n then ns.outgoing[out] = nil end
+      ns.AnnounceState()
     end or nil
     if target then ns.Send(target, msg, prio, nil, onSent) else ns.Broadcast(msg, prio, nil, onSent) end
     i = last + 1
@@ -391,7 +407,9 @@ local stateTimer
 local function StateMsg(t)
   return { t = t or "STATE", r = ns.RealmKey(), st = ns.state, d = ns.Fingerprint(), os = ns.onlineSince,
     w = ns.syncingWith, ls = ns.LastSync(), nt = newestTs, hl = HostingCount(), pg = ns.syncProgress,
-    rx = ns.Receiving and ns.Receiving() or 0 }
+    rx = ns.Receiving and ns.Receiving() or 0, hc = ns.MyHostsCount and ns.MyHostsCount() or nil,
+    tg = ns.MyTarget and ns.MyTarget() or nil, rp = ns.ReceiveProgress and ns.ReceiveProgress() or nil,
+    sp = ns.SendProgress and ns.SendProgress() or nil }
 end
 
 -- Tell everyone our state/fingerprint (debounced: several changes in a row send one message).
@@ -522,6 +540,61 @@ function ns.Receiving()
   end
   return n
 end
+
+-- For the Sync Monitor (and shared in STATE so others can show it too):
+-- how many hosts our handshake is pulling from, the master list it's syncing to, and how far
+-- our incoming / outgoing transfers have got (percent, nil when there are none).
+function ns.MyHostsCount()
+  if not join then return nil end
+  local hosts = {}
+  for _, piece in pairs(join.pieces) do hosts[piece.host] = true end
+  local n = 0
+  for _ in pairs(hosts) do n = n + 1 end
+  return n > 0 and n or 1
+end
+
+function ns.MyTarget() return join and join.target or nil end
+
+function ns.ReceiveProgress()
+  local got, tot = 0, 0
+  for _, tr in pairs(transfers) do
+    if tr.kind ~= "join" and tr.kind ~= "reply" and tr.tot then
+      got, tot = got + tr.received, tot + tr.tot
+    end
+  end
+  return tot > 0 and floor(got / tot * 100) or nil
+end
+
+function ns.SendProgress()
+  local sent, tot = 0, 0
+  for out in pairs(ns.outgoing) do sent, tot = sent + out.sent, tot + out.tot end
+  return tot > 0 and floor(sent / tot * 100) or nil
+end
+
+-- My transfers in detail, for my own rows in the Sync Monitor.
+function ns.MyTransfers()
+  local list = {}
+  for out in pairs(ns.outgoing) do
+    list[#list + 1] = { dir = "out", who = out.to, kind = out.kind, done = out.sent, tot = out.tot, started = out.started }
+  end
+  for _, tr in pairs(transfers) do
+    if tr.tot and tr.kind ~= "join" then
+      list[#list + 1] = { dir = "in", who = tr.from, kind = tr.kind, done = tr.received, tot = tr.tot, started = tr.started }
+    end
+  end
+  return list
+end
+
+function ns.Pieces()
+  local list = {}
+  for _, piece in pairs(join and join.pieces or {}) do
+    list[#list + 1] = { host = piece.host.name, sections = #piece.list, done = piece.done,
+      got = piece.received or 0, tot = piece.tot }
+  end
+  return list
+end
+
+function ns.IsCompatible(peer) return (peer.proto or 1) >= ns.PROTOCOL and not peer.otherRealm end
 
 local function HostNames()
   local names, seen = {}, {}
@@ -656,7 +729,7 @@ local function StartHandshake(verbose, probe)
     for _, piece in pairs(join.pieces) do if piece.timer then piece.timer:Cancel() end end
     if join.timer then join.timer:Cancel() end
   end
-  join = { verbose = verbose, probe = probe, pieces = {}, bad = {}, changed = 0, nextId = 0 }
+  join = { verbose = verbose, probe = probe, pieces = {}, bad = {}, changed = 0, nextId = 0, target = ns.Master() }
   SetState("syncing", probe.name)
   ns.syncProgress = 0
   ns.Log("%s is comparing with %s (in sync%s): %s", ns.MyName(), probe.name,
@@ -758,6 +831,7 @@ local function NoteState(peer, msg, isHello)
   peer.st, peer.d, peer.os, peer.w = msg.st, msg.d, tonumber(msg.os), msg.w
   peer.ls, peer.nt, peer.hl, peer.pg = tonumber(msg.ls), tonumber(msg.nt), tonumber(msg.hl) or 0, tonumber(msg.pg)
   peer.rx = tonumber(msg.rx) or 0
+  peer.hc, peer.tg, peer.rp, peer.sp = tonumber(msg.hc), msg.tg, tonumber(msg.rp), tonumber(msg.sp)
   peer.lastHeard = ns.Now()
   if isHello or wasOffline then
     ns.Log("%s came online (v%s)", peer.name, tostring(peer.version))
@@ -845,7 +919,8 @@ function ns.OnMessage(msg, peer)
     local tkey = peerKey .. "/" .. tostring(msg.x)
     local tr = transfers[tkey]
     if not tr then
-      tr = { kind = msg.k or "update", changed = 0, received = 0, brought = {}, theirs = {} }
+      tr = { kind = msg.k or "update", changed = 0, received = 0, brought = {}, theirs = {},
+        from = peer.name, started = ns.Now() }
       transfers[tkey] = tr
       if tr.kind ~= "join" then ns.AnnounceState() end -- now "receiving updates"
       if tr.kind == "join" then
@@ -872,9 +947,12 @@ function ns.OnMessage(msg, peer)
       end
       if tr.kind == "join" and price then tr.theirs[key] = price end
     end
+    tr.tot = tonumber(msg.tot) or tr.tot
     if piece then
       piece.received, piece.tot = tr.received, tonumber(msg.tot) or piece.tot
       UpdateProgress()
+    elseif tr.kind ~= "join" then
+      ns.AnnounceState() -- receive progress
     end
     local tot = tonumber(msg.tot)
     if tot and tot > BATCH then
