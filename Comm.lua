@@ -257,6 +257,10 @@ local function Deliver(name, route, text, bnID)
   peer.name = name
   peer.routes[route] = true
   if bnID then peer.bnID = bnID end
+  if peer.sid and msg.sid and peer.sid ~= msg.sid and ns.CancelTransfersTo then
+    ns.CancelTransfersTo(name, "they reloaded")
+  end
+  peer.sid = msg.sid or peer.sid
   peer.version, peer.proto, peer.lastSeen, peer.gone = msg.v, tonumber(msg.p) or 1, ns.Now(), nil
   ns.OnMessage(msg, peer)
 end

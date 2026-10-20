@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.1
+- Fixed handshakes getting stuck on "comparing". If a player reloaded mid-handshake (e.g. to update), their host kept sending them the whole old reply, minutes of data they'd throw away, and the new handshake's small "which sections differ" answer queued behind it.
+  - Transfers now go out one batch at a time (the next batch is only queued once the last has actually been sent), so they can be stopped midway.
+  - When a player reloads (a new login session) or goes offline, everything still unsent to them is dropped, along with any handshake piece being hosted for them. The log notes it.
+- The compare step gives up on a host after 45 seconds (it was 3 minutes) and compares with another in-sync player instead.
+- The compare step names who it's waiting for: "comparing - waiting for Confuciussay Dranged".
+
 ## 0.18.0
 - **Much faster handshakes for returning players.** A login handshake now only moves prices that can actually be new: the newcomer sends the prices it has seen since its last sync (at which point its list matched the master list), and the host sends back the prices it has seen since then plus any that differ from what the newcomer sent. Before, any section with a single different price was exchanged in full both ways, which after a scan meant nearly the whole price list (minutes, given the game's limit on addon messages). Someone who synced yesterday and hasn't scanned since now moves a few hundred prices instead of thousands.
 - If a quick handshake ever leaves someone not matching the master list (say they last synced with a different group), the self-repair runs a **full** handshake. A first-ever sync is always full. The log says which kind each handshake is.

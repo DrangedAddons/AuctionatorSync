@@ -39,6 +39,7 @@ local JOIN_TIMEOUT = 180    -- seconds without hearing from the host before tryi
 local HEARTBEAT = 60        -- seconds between STATE heartbeats
 local HEAL_AFTER = 120      -- seconds out of sync with the host before re-syncing
 local SINCE_MARGIN = 600    -- a quick handshake re-sends prices from a little before the last sync
+local COMPARE_TIMEOUT = 45  -- the compare step is two small messages: no answer by then, try another host
 local SECTIONS = 256
 local TS_KEEP_DAYS = 60
 local TWO32 = 4294967296
@@ -310,18 +311,25 @@ function ns.SendEntries(target, list, prio, k, extra)
   local realm = ns.RealmKey()
   transferCounter = transferCounter + 1
   local x = transferCounter
-  local n, i = #list, 1
+  local n = #list
   local label = string.format("%s -> %s", ns.MyName(), target and (target.name or "?") or "everyone")
   local what = KIND_WORDS[k] or "scan prices"
   local batches = math.max(1, math.ceil(n / BATCH))
-  local out
+  local out = { to = target and (target.name or "?") or "everyone", toKey = target and target.name and ns.ShortName(target.name),
+    kind = k, tot = n, sent = 0, started = ns.Now() }
   if n > 0 then
-    out = { to = target and (target.name or "?") or "everyone", kind = k, tot = n, sent = 0, started = ns.Now() }
     ns.outgoing[out] = true
     -- forget it if the throttle never reports the last batch (e.g. a disconnect)
     C_Timer.After(900, function() ns.outgoing[out] = nil end)
   end
-  repeat
+
+  -- One batch at a time: the next is only queued once this one has actually gone out, so a
+  -- transfer can be stopped midway (out.cancelled) instead of the whole thing sitting queued.
+  local function SendBatch(i)
+    if out.cancelled then
+      ns.outgoing[out] = nil
+      return
+    end
     local last = math.min(i + BATCH - 1, n)
     local base = math.huge
     for j = i, last do base = math.min(base, list[j][4]) end
@@ -336,21 +344,38 @@ function ns.SendEntries(target, list, prio, k, extra)
     end
     local msg = { t = "DATA", r = realm, x = x, e = e, b = base, fin = (last >= n) or nil, k = k, tot = n }
     for field, value in pairs(extra or {}) do msg[field] = value end
-    local sentSoFar = last
-    local onSent = out and function()
-      out.sent = math.max(out.sent, sentSoFar)
-      if batches > 1 then
-        ns.Log("%s: sent %s / %s (%s, %d%%)", label, ns.Num(sentSoFar), ns.Plural(n, "price"), what,
-          floor(sentSoFar / n * 100))
+    local function onSent()
+      out.sent = math.max(out.sent, last)
+      if batches > 1 and n > 0 then
+        ns.Log("%s: sent %s / %s (%s, %d%%)", label, ns.Num(last), ns.Plural(n, "price"), what, floor(last / n * 100))
       end
       if out.sent >= n then ns.outgoing[out] = nil end
       if ns.OnSendProgress then ns.OnSendProgress() end
       ns.AnnounceState()
-    end or nil
+      if last < n then SendBatch(last + 1) end
+    end
     if target then ns.Send(target, msg, prio, nil, onSent) else ns.Broadcast(msg, prio, nil, onSent) end
-    i = last + 1
-  until i > n
-  return out -- { tot, sent } for whoever wants to follow it (handshake progress)
+  end
+  SendBatch(1)
+  return out -- { tot, sent, cancelled } for whoever wants to follow or stop it
+end
+
+-- Stop everything still unsent to one player (they reloaded, or went offline).
+function ns.CancelTransfersTo(name, why)
+  local key = ns.ShortName(name)
+  local stopped = 0
+  for out in pairs(ns.outgoing) do
+    if out.toKey == key and not out.cancelled then
+      out.cancelled = true
+      ns.outgoing[out] = nil
+      stopped = stopped + 1
+    end
+  end
+  if ns.DropHostingFor then ns.DropHostingFor(key) end
+  if stopped > 0 then
+    ns.Log("%s stopped sending to %s (%s)", ns.MyName(), name, why)
+    ns.AnnounceState()
+  end
 end
 
 ----------------------------------------------------------------------------------------------
@@ -618,7 +643,8 @@ end
 local function UpdateProgress()
   if not join then return end
   if not next(join.pieces) then
-    ns.syncProgress, ns.syncPhase = 1, "comparing"
+    ns.syncProgress = 1
+    ns.syncPhase = "comparing - waiting for " .. (join.probe and join.probe.name or "the host")
     ns.AnnounceState()
     return
   end
@@ -771,13 +797,13 @@ local function StartHandshake(verbose, probe, full)
     since and ("changes since last sync " .. date("%d %b %H:%M", last)) or "full compare")
   local b = {}
   for i = 0, SECTIONS - 1 do b[i + 1] = sections[i] end
-  ns.syncPhase = "comparing"
+  ns.syncPhase = "comparing - waiting for " .. probe.name
   ns.Send(ns.ReplyTarget(probe), { t = "SUM", r = ns.RealmKey(), b = b }, "ALERT", nil, function()
     ns.Log("%s sent its section sums to %s; waiting for the comparison", ns.MyName(), probe.name)
   end)
   UpdateProgress()
   local mine = join
-  join.timer = C_Timer.NewTimer(JOIN_TIMEOUT, function()
+  join.timer = C_Timer.NewTimer(COMPARE_TIMEOUT, function()
     if join ~= mine or next(mine.pieces) then return end
     mine.bad[probe] = true
     local hosts = Hosts(ns.Master(), mine.bad)
@@ -890,6 +916,19 @@ local function NoteState(peer, msg, isHello)
       ns.Log("%s is ready, but their prices differ from the master list", peer.name)
     end
   end
+end
+
+-- A player we were hosting reloaded or left: forget their unfinished pieces.
+function ns.DropHostingFor(peerKey)
+  local changed = false
+  for tkey in pairs(hosting) do
+    if tkey:sub(1, #peerKey + 1) == peerKey .. "/" then
+      hosting[tkey] = nil
+      transfers[tkey] = nil
+      changed = true
+    end
+  end
+  if changed then ns.AnnounceState() end
 end
 
 -- A handshake piece we're serving has finished (or died): no longer counts as hosting load.
@@ -1096,6 +1135,7 @@ C_Timer.NewTicker(30, function()
       peer.gone = true
       peer.lastHeard = nil
       ns.Log("%s went offline", peer.name)
+      ns.CancelTransfersTo(peer.name, "they went offline")
     end
   end
   -- Safety net (and how two versions of the list get merged): out of step with the master list
