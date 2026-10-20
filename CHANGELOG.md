@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.16.1
+- The number of hosts a big sync uses now adapts: at most half of the in-sync players who aren't hosting anyone (so others logging in at the same time still find a free one), at least 16 sections per host, and never more than 6. Small groups end up much as before; busy guilds can spread a big sync wider.
+
 ## 0.16.0
 **Protocol 4: any in-sync player can host, and big syncs pull from several hosts at once.** Everyone needs 0.16.0; older versions show as "needs update".
 - **No single host any more.** Anyone who holds the master list can host a handshake. A newcomer picks the least busy one (Battle.net friends first among equals, then at random), so people logging in together spread out instead of queueing behind one player. Each finished player becomes another possible host.

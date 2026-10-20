@@ -487,16 +487,16 @@ end
 --
 --   1. The newcomer sends its 256 section sums to one host (the least busy in-sync player);
 --      the host answers with the sections that differ.
---   2. Few differ (SWARM_MIN or fewer): that host does them all. More: they're dealt out in
---      pieces across up to SWARM_MAX in-sync hosts, which all hold the same list, so the pieces
+--   2. The differing sections are dealt out in pieces across in-sync hosts, which all hold the
+--      same list, so the pieces fit together. How many hosts: see HostCount below. The pieces
 --      fit together.
 --   3. Per piece: the newcomer sends its prices for those sections; the host merges them
 --      (newest wins), sends back its prices that differ, and shares what the newcomer brought
 --      with everyone else.
 --   4. A host that goes quiet has its piece moved to another host.
 
-local SWARM_MIN = 16  -- more differing sections than this: spread across hosts
-local SWARM_MAX = 4   -- at most this many hosts per handshake
+local SECTIONS_PER_HOST = 16 -- each host gets at least this many sections (smaller isn't worth it)
+local SWARM_MAX = 6          -- never more hosts than this (past it the newcomer's own sending dominates)
 
 local join -- { verbose, probe, pieces = { [id] = piece }, bad = { [peer] = true }, changed, nextId }
 local transfers = {}
@@ -587,12 +587,23 @@ SendPiece = function(piece)
 end
 
 -- Step 2: deal the differing sections out to hosts.
+-- How many hosts one handshake uses: the smallest of
+--   half the free in-sync hosts (so others logging in at the same time still find one),
+--   the differing sections / SECTIONS_PER_HOST, and SWARM_MAX - but always at least 1.
+local function HostCount(differing, candidates)
+  local free = 0
+  for _, h in ipairs(candidates) do
+    if (h.hl or 0) == 0 then free = free + 1 end
+  end
+  return math.max(1, math.min(floor(free / 2), floor(differing / SECTIONS_PER_HOST), SWARM_MAX))
+end
+
 local function StartPieces(bk)
+  local candidates = Hosts(ns.Master(), join.bad)
+  local want = HostCount(#bk, candidates)
   local hosts = { join.probe }
-  if #bk > SWARM_MIN then
-    for _, h in ipairs(Hosts(ns.Master(), join.bad)) do
-      if h ~= join.probe and #hosts < SWARM_MAX then hosts[#hosts + 1] = h end
-    end
+  for _, h in ipairs(candidates) do
+    if h ~= join.probe and #hosts < want then hosts[#hosts + 1] = h end
   end
   local per = math.ceil(#bk / #hosts)
   local parts = {}
