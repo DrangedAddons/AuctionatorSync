@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.19.0
+- **Stalled handshakes are dropped and moved on.** A handshake piece is only kept alive while prices are actually moving (our upload batches going out or the host's reply batches arriving). Before, any message from the host, even its once-a-minute heartbeat, kept a stuck piece alive forever. If nothing moves for 60 seconds:
+  - the host is told to stop (it stops sending that piece and stops hosting it),
+  - our upload to it stops,
+  - the piece goes to another in-sync host and starts again,
+  - and the stalled host is **benched for 10 minutes**: it isn't picked as a host for any handshake until then. A host that doesn't answer the compare step within 45 seconds is benched the same way.
+  - With no other host free, the handshake stops cleanly and tries again later.
+- **Sync Monitor:** the activity is split into **Activity** (what they're doing: "Handshaking: sending", "Receiving", "Sharing", "Hosting") and **Amount** (its x / y, e.g. "1,500 / 4,000"), for everyone's rows. Benched hosts are listed at the bottom with the time they have left.
+
 ## 0.18.1
 - Fixed handshakes getting stuck on "comparing". If a player reloaded mid-handshake (e.g. to update), their host kept sending them the whole old reply, minutes of data they'd throw away, and the new handshake's small "which sections differ" answer queued behind it.
   - Transfers now go out one batch at a time (the next batch is only queued once the last has actually been sent), so they can be stopped midway.

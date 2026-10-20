@@ -40,6 +40,8 @@ local HEARTBEAT = 60        -- seconds between STATE heartbeats
 local HEAL_AFTER = 120      -- seconds out of sync with the host before re-syncing
 local SINCE_MARGIN = 600    -- a quick handshake re-sends prices from a little before the last sync
 local COMPARE_TIMEOUT = 45  -- the compare step is two small messages: no answer by then, try another host
+local STALL_TIMEOUT = 60    -- a handshake piece with no prices moving either way for this long is dropped
+local BENCH_TIME = 600      -- a host dropped for that is not picked again for this long (10 minutes)
 local SECTIONS = 256
 local TS_KEEP_DAYS = 60
 local TWO32 = 4294967296
@@ -424,6 +426,7 @@ end
 
 -- Handshake pieces this character is serving right now (its "hosting" load).
 local hosting = {} -- transfer key -> true
+local replies = {} -- "<peerKey>#<piece id>" -> our reply transfer for that piece (stoppable by CANCEL)
 local function HostingCount()
   local n = 0
   for _ in pairs(hosting) do n = n + 1 end
@@ -435,7 +438,11 @@ local stateTimer
 local function StateMsg(t)
   return { t = t or "STATE", r = ns.RealmKey(), st = ns.state, d = ns.Fingerprint(), os = ns.onlineSince,
     w = ns.syncingWith, ls = ns.LastSync(), nt = newestTs, hl = HostingCount(), pg = ns.syncProgress,
-    rx = ns.Receiving and ns.Receiving() or 0, ph = ns.state == "syncing" and ns.syncPhase or nil, hc = ns.MyHostsCount and ns.MyHostsCount() or nil,
+    rx = ns.Receiving and ns.Receiving() or 0, ph = ns.state == "syncing" and ns.syncPhase or nil,
+    hs = ns.state == "syncing" and ns.syncStep or nil, hd = ns.state == "syncing" and ns.syncDone or nil,
+    ht = ns.state == "syncing" and ns.syncTotal or nil, ra = (ns.ReceiveAmounts and select(1, ns.ReceiveAmounts())) or nil,
+    rt = (ns.ReceiveAmounts and select(2, ns.ReceiveAmounts())) or nil, sa = (ns.SendAmounts and select(1, ns.SendAmounts())) or nil,
+    st2 = (ns.SendAmounts and select(2, ns.SendAmounts())) or nil, hc = ns.MyHostsCount and ns.MyHostsCount() or nil,
     tg = ns.MyTarget and ns.MyTarget() or nil, rp = ns.ReceiveProgress and ns.ReceiveProgress() or nil,
     sp = ns.SendProgress and ns.SendProgress() or nil }
 end
@@ -488,11 +495,40 @@ ns.MasterFingerprint = ns.Master
 -- Who can host a handshake: any ready player holding the master list. Least busy first, then
 -- Battle.net friends (16x bigger messages), then random, so newcomers spread out instead of
 -- queueing behind one player. exclude = a set of peers to leave out.
+-- Hosts that stalled or didn't answer sit out for BENCH_TIME: not picked for any handshake.
+local benched = {} -- peerKey -> until (server time)
+
+local function IsBenched(peer)
+  local untilTs = benched[ns.ShortName(peer.name)]
+  return untilTs ~= nil and untilTs > ns.Now()
+end
+
+local function Bench(peer, why)
+  benched[ns.ShortName(peer.name)] = ns.Now() + BENCH_TIME
+  ns.Log("%s benched as a host for %d min (%s)", peer.name, BENCH_TIME / 60, why)
+end
+
+-- For the Sync Monitor: { { name, secondsLeft }, ... }
+function ns.BenchedHosts()
+  local list = {}
+  for key, untilTs in pairs(benched) do
+    local left = untilTs - ns.Now()
+    if left > 0 then
+      local peer = ns.peers[key]
+      list[#list + 1] = { name = peer and peer.name or key, left = left }
+    else
+      benched[key] = nil
+    end
+  end
+  table.sort(list, function(a, b) return a.name < b.name end)
+  return list
+end
+
 local function Hosts(master, exclude)
   local list = {}
   for _, peer in pairs(ns.peers) do
     if ns.IsPeerOnline(peer) and Compatible(peer) and peer.st == "ready" and peer.d == master
-      and not (exclude and exclude[peer]) then
+      and not (exclude and exclude[peer]) and not IsBenched(peer) then
       peer.pick = math.random()
       list[#list + 1] = peer
     end
@@ -583,19 +619,32 @@ end
 
 function ns.MyTarget() return join and join.target or nil end
 
-function ns.ReceiveProgress()
+function ns.ReceiveAmounts()
   local got, tot = 0, 0
   for _, tr in pairs(transfers) do
     if tr.kind ~= "join" and tr.kind ~= "reply" and tr.tot then
       got, tot = got + tr.received, tot + tr.tot
     end
   end
+  return got, tot
+end
+
+function ns.ReceiveProgress()
+  local got, tot = ns.ReceiveAmounts()
   return tot > 0 and floor(got / tot * 100) or nil
 end
 
-function ns.SendProgress()
+-- what we're sending outside our own handshake (scan shares, share-outs, replies we host)
+function ns.SendAmounts()
   local sent, tot = 0, 0
-  for out in pairs(ns.outgoing) do sent, tot = sent + out.sent, tot + out.tot end
+  for out in pairs(ns.outgoing) do
+    if out.kind ~= "join" then sent, tot = sent + out.sent, tot + out.tot end
+  end
+  return sent, tot
+end
+
+function ns.SendProgress()
+  local sent, tot = ns.SendAmounts()
   return tot > 0 and floor(sent / tot * 100) or nil
 end
 
@@ -645,6 +694,7 @@ local function UpdateProgress()
   if not next(join.pieces) then
     ns.syncProgress = 1
     ns.syncPhase = "comparing - waiting for " .. (join.probe and join.probe.name or "the host")
+    ns.syncStep, ns.syncDone, ns.syncTotal = "comparing", nil, nil
     ns.AnnounceState()
     return
   end
@@ -659,14 +709,24 @@ local function UpdateProgress()
   local total = upTot + inTot
   ns.syncProgress = total > 0 and math.min(99, math.max(1, floor((upDone + inDone) / total * 100))) or 1
   if upDone < upTot then
-    ns.syncPhase = string.format("sending %s / %s", ns.Num(upDone), ns.Num(upTot))
+    ns.syncStep, ns.syncDone, ns.syncTotal = "sending", upDone, upTot
   else
-    ns.syncPhase = string.format("receiving %s / %s", ns.Num(inDone), ns.Num(inTot))
+    ns.syncStep, ns.syncDone, ns.syncTotal = "receiving", inDone, inTot
   end
+  ns.syncPhase = string.format("%s %s / %s", ns.syncStep, ns.Num(ns.syncDone), ns.Num(ns.syncTotal))
   ns.syncingWith = HostNames()
   ns.AnnounceState()
 end
-ns.OnSendProgress = function() if join then UpdateProgress() end end
+ns.OnSendProgress = function()
+  if not join then return end
+  for _, piece in pairs(join.pieces) do
+    if piece.up and piece.up.sent ~= piece.lastUp then
+      piece.lastUp = piece.up.sent
+      piece.lastProgress = ns.Now()
+    end
+  end
+  UpdateProgress()
+end
 
 local function FinishJoin(verbose, changed, via)
   local r = Realm()
@@ -699,20 +759,22 @@ end
 
 local SendPiece -- forward declaration (pieces re-send themselves on reassignment)
 
-local function ArmPiece(piece)
-  if piece.timer then piece.timer:Cancel() end
-  piece.timer = C_Timer.NewTimer(JOIN_TIMEOUT, function()
-    if not join or join.pieces[piece.id] ~= piece or piece.done then return end
-    join.bad[piece.host] = true
-    local hosts = Hosts(ns.Master(), join.bad)
-    if not hosts[1] then
-      GiveUp()
-      return
-    end
-    ns.Log("%s stopped answering; moving %d sections to %s", piece.host.name, #piece.list, hosts[1].name)
-    piece.host, piece.received, piece.tot = hosts[1], 0, nil
-    SendPiece(piece)
-  end)
+-- Drop a stalled piece: tell that host to stop, stop our upload to it, bench it, and give the
+-- piece to another in-sync host. No host left: stop the handshake cleanly and retry later.
+local function KickPiece(piece, why)
+  local old = piece.host
+  if piece.up then piece.up.cancelled = true end
+  ns.Send(ns.ReplyTarget(old), { t = "CANCEL", r = ns.RealmKey(), pc = piece.id }, "ALERT")
+  Bench(old, why)
+  join.bad[old] = true
+  local hosts = Hosts(ns.Master(), join.bad)
+  if not hosts[1] then
+    GiveUp()
+    return
+  end
+  ns.Log("%s dropped %s (%s); moving %d sections to %s", ns.MyName(), old.name, why, #piece.list, hosts[1].name)
+  piece.host, piece.received, piece.tot, piece.lastUp = hosts[1], 0, nil, nil
+  SendPiece(piece)
 end
 
 SendPiece = function(piece)
@@ -732,7 +794,7 @@ SendPiece = function(piece)
     join.since and string.format(" (only those seen since %s; %s in those sections)", date("%H:%M", join.since), ns.Num(all)) or "")
   piece.up = ns.SendEntries(ns.ReplyTarget(piece.host), items, "BULK", "join",
     { bk = piece.list, pc = piece.id, sn = join.since })
-  ArmPiece(piece)
+  piece.lastProgress = ns.Now()
   UpdateProgress()
 end
 
@@ -798,6 +860,7 @@ local function StartHandshake(verbose, probe, full)
   local b = {}
   for i = 0, SECTIONS - 1 do b[i + 1] = sections[i] end
   ns.syncPhase = "comparing - waiting for " .. probe.name
+  ns.syncStep, ns.syncDone, ns.syncTotal = "comparing", nil, nil
   ns.Send(ns.ReplyTarget(probe), { t = "SUM", r = ns.RealmKey(), b = b }, "ALERT", nil, function()
     ns.Log("%s sent its section sums to %s; waiting for the comparison", ns.MyName(), probe.name)
   end)
@@ -806,6 +869,7 @@ local function StartHandshake(verbose, probe, full)
   join.timer = C_Timer.NewTimer(COMPARE_TIMEOUT, function()
     if join ~= mine or next(mine.pieces) then return end
     mine.bad[probe] = true
+    Bench(probe, string.format("no answer to the compare in %ds", COMPARE_TIMEOUT))
     local hosts = Hosts(ns.Master(), mine.bad)
     if hosts[1] then
       ns.Log("%s didn't answer; comparing with %s instead", probe.name, hosts[1].name)
@@ -898,6 +962,8 @@ local function NoteState(peer, msg, isHello)
   peer.rx = tonumber(msg.rx) or 0
   peer.hc, peer.tg, peer.rp, peer.sp = tonumber(msg.hc), msg.tg, tonumber(msg.rp), tonumber(msg.sp)
   peer.ph = msg.ph
+  peer.hs, peer.hd, peer.ht = msg.hs, tonumber(msg.hd), tonumber(msg.ht)
+  peer.ra, peer.rt, peer.sa, peer.st2 = tonumber(msg.ra), tonumber(msg.rt), tonumber(msg.sa), tonumber(msg.st2)
   peer.lastHeard = ns.Now()
   if isHello or wasOffline then
     ns.Log("%s came online (v%s)", peer.name, tostring(peer.version))
@@ -958,12 +1024,6 @@ function ns.OnMessage(msg, peer)
     return
   end
   local peerKey = ns.ShortName(peer.name)
-  -- a host we're waiting on is still talking: keep its piece alive
-  if join then
-    for _, piece in pairs(join.pieces) do
-      if piece.host == peer and not piece.done then ArmPiece(piece) end
-    end
-  end
 
   if msg.t == "HELLO" then
     NoteState(peer, msg, true)
@@ -980,6 +1040,23 @@ function ns.OnMessage(msg, peer)
     end
     ns.Log("%s is comparing with %s: %d of %d sections differ", peer.name, ns.MyName(), #diff, SECTIONS)
     ns.Send(ns.ReplyTarget(peer), { t = "NEED", r = ns.RealmKey(), bk = diff }, "ALERT")
+
+  elseif msg.t == "CANCEL" then
+    -- the newcomer dropped us for this piece: stop sending it and stop hosting it
+    local key = peerKey .. "#" .. tostring(msg.pc)
+    local out = replies[key]
+    if out then
+      out.cancelled = true
+      ns.outgoing[out] = nil
+      replies[key] = nil
+    end
+    for tkey, tr in pairs(transfers) do
+      if tr.kind == "join" and tostring(tr.pc) == tostring(msg.pc) and tkey:sub(1, #peerKey + 1) == peerKey .. "/" then
+        transfers[tkey] = nil
+        DoneHosting(tkey)
+      end
+    end
+    ns.Log("%s dropped %s as a host for a handshake piece; stopped sending it", peer.name, ns.MyName())
 
   elseif msg.t == "NEED" then
     if not join or join.probe ~= peer or next(join.pieces) then return end
@@ -1030,6 +1107,7 @@ function ns.OnMessage(msg, peer)
     tr.tot = tonumber(msg.tot) or tr.tot
     if piece then
       piece.received, piece.tot = tr.received, tonumber(msg.tot) or piece.tot
+      piece.lastProgress = ns.Now()
       UpdateProgress()
     elseif tr.kind ~= "join" then
       ns.AnnounceState() -- receive progress
@@ -1067,7 +1145,7 @@ function ns.OnMessage(msg, peer)
         end
       end
       ns.Log("%s sends %s the master list for those sections: %s", ns.MyName(), peer.name, ns.Plural(#reply, "price"))
-      ns.SendEntries(ns.ReplyTarget(peer), reply, "BULK", "reply", { pc = tr.pc, tot = #reply })
+      replies[peerKey .. "#" .. tostring(tr.pc)] = ns.SendEntries(ns.ReplyTarget(peer), reply, "BULK", "reply", { pc = tr.pc, tot = #reply })
       if #tr.brought > 0 then
         local others = 0
         for short, p in pairs(ns.peers) do
@@ -1127,6 +1205,18 @@ end
 -- Heartbeat, who went offline, and the safety net
 
 local mismatchSince
+
+-- Watchdog: every few seconds, drop any handshake piece whose prices stopped moving.
+C_Timer.NewTicker(5, function()
+  if not join then return end
+  local now = ns.Now()
+  for _, piece in pairs(join.pieces) do
+    if not piece.done and piece.lastProgress and now - piece.lastProgress > STALL_TIMEOUT then
+      KickPiece(piece, string.format("no progress for %ds", STALL_TIMEOUT))
+      if not join then return end
+    end
+  end
+end)
 
 C_Timer.NewTicker(30, function()
   if not ns.store or not ns.RealmKey() or ns.state == "starting" then return end

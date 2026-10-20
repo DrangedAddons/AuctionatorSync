@@ -8,14 +8,16 @@
 local _, ns = ...
 
 local win
+local floor = math.floor
 local ROW_H, MAX_ROWS, MAX_DETAIL = 20, 10, 6
 local COLS = {
   { key = "name", label = "Player", x = 8 },
   { key = "activity", label = "Activity", x = 140 },
-  { key = "progress", label = "Progress", x = 336 },
-  { key = "hosts", label = "Hosts", x = 444 },
-  { key = "hosting", label = "Hosting", x = 490 },
-  { key = "target", label = "Syncing to", x = 552 },
+  { key = "amount", label = "Amount", x = 300 },
+  { key = "progress", label = "Progress", x = 410 },
+  { key = "hosts", label = "Hosts", x = 520 },
+  { key = "hosting", label = "Hosting", x = 566 },
+  { key = "target", label = "Syncing to", x = 628 },
 }
 
 local function Short(fp) return fp and tostring(fp):sub(1, 8) or "-" end
@@ -28,37 +30,51 @@ local function Ago(ts)
   return math.floor(s / 3600) .. "h ago"
 end
 
--- One player's activity: { name, activity, progress, hosts, hosting, target, color } or nil if idle.
-local function Activity(name, st, pg, hc, tg, rp, sp, hl, rx, master, ph)
-  local parts, progress, color = {}, nil, "ffd100"
-  if st == "syncing" then
-    parts[#parts + 1] = "Handshaking" .. (ph and (": " .. ph) or "")
-    progress = pg or 0
-  elseif st == "waiting" then
+-- One player's activity: { name, activity, amount, progress, hosts, hosting, target, color }, or
+-- nil when idle. The first of handshaking / receiving / sharing / hosting is the main activity
+-- (its x / y goes in the Amount column); any others are added after it.
+-- p: { st, pg, hs, hd, ht, ra, rt, sa, st2, hc, tg, hl, rx }
+local function Amount(done, total)
+  if not total or total <= 0 then return nil end
+  return ns.Num(done or 0) .. " / " .. ns.Num(total)
+end
+
+local function Activity(name, p, master)
+  local parts, amount, progress, color = {}, nil, nil, "ffd100"
+  if p.st == "syncing" then
+    parts[#parts + 1] = "Handshaking" .. (p.hs and (": " .. p.hs) or "")
+    amount = Amount(p.hd, p.ht)
+    progress = p.pg or 0
+  elseif p.st == "waiting" then
     parts[#parts + 1] = "Looking for hosts"
   end
-  if rp or (rx or 0) > 0 then
+  if (p.rt or 0) > 0 or (p.rx or 0) > 0 then
     parts[#parts + 1] = "Receiving"
-    progress = progress or rp or 0
+    if not amount then amount = Amount(p.ra, p.rt) end
+    if not progress and (p.rt or 0) > 0 then progress = floor((p.ra or 0) / p.rt * 100) end
   end
-  if sp then
+  if (p.st2 or 0) > 0 then
     parts[#parts + 1] = "Sharing"
-    progress = progress or sp
+    if not amount then amount = Amount(p.sa, p.st2) end
+    if not progress then progress = floor((p.sa or 0) / p.st2 * 100) end
   end
-  if (hl or 0) > 0 then
+  if (p.hl or 0) > 0 then
     parts[#parts + 1] = "Hosting"
     if #parts == 1 then color = "33ff99" end -- only hosting: it's in sync, serving others
   end
   if #parts == 0 then return nil end
-  return { name = name, activity = table.concat(parts, " + "), progress = progress, hosts = hc,
-    hosting = (hl or 0) > 0 and hl or nil, target = tg or (st == "syncing" and master) or nil, color = color }
+  return { name = name, activity = table.concat(parts, " + "), amount = amount, progress = progress, hosts = p.hc,
+    hosting = (p.hl or 0) > 0 and p.hl or nil, target = p.tg or (p.st == "syncing" and master) or nil, color = color }
 end
 
 local function Gather()
   local master = ns.Master()
   local active, inSync, behind, old = {}, {}, {}, {}
-  local mine = Activity(ns.MyName(), ns.state, ns.syncProgress, ns.MyHostsCount(), ns.MyTarget(),
-    ns.ReceiveProgress(), ns.SendProgress(), ns.HostingCount(), ns.Receiving(), master, ns.syncPhase)
+  local ra, rt = ns.ReceiveAmounts()
+  local sa, st2 = ns.SendAmounts()
+  local mine = Activity(ns.MyName(), { st = ns.state, pg = ns.syncProgress, hs = ns.syncStep, hd = ns.syncDone,
+    ht = ns.syncTotal, ra = ra, rt = rt, sa = sa, st2 = st2, hc = ns.MyHostsCount(), tg = ns.MyTarget(),
+    hl = ns.HostingCount(), rx = ns.Receiving() }, master)
   if mine then
     mine.me = true
     active[#active + 1] = mine
@@ -72,7 +88,7 @@ local function Gather()
       if not ns.IsCompatible(peer) then
         old[#old + 1] = peer.name .. " (v" .. tostring(peer.version) .. ")"
       else
-        local a = Activity(peer.name, peer.st, peer.pg, peer.hc, peer.tg, peer.rp, peer.sp, peer.hl, peer.rx, master, peer.ph)
+        local a = Activity(peer.name, peer, master)
         if a then
           active[#active + 1] = a
         elseif peer.d == master then
@@ -83,7 +99,7 @@ local function Gather()
       end
     end
   end
-  table.sort(active, function(a, b) return a.name < b.name end)
+  table.sort(active, function(x, y) return x.name < y.name end)
   table.sort(inSync)
   table.sort(behind)
   table.sort(old)
@@ -125,6 +141,7 @@ local function Refresh()
     if a then
       row.name:SetText(a.name .. (a.me and " |cff999999(you)|r" or ""))
       row.activity:SetText("|cff" .. a.color .. a.activity .. "|r")
+      row.amount:SetText(a.amount or "|cff666666-|r")
       if a.progress then
         row.bar:Show()
         row.bar:SetValue(a.progress)
@@ -158,6 +175,11 @@ local function Refresh()
   if #inSync > 0 then foot[#foot + 1] = string.format("|cff33ff99In sync (%d):|r %s", #inSync, table.concat(inSync, ", ")) end
   if #behind > 0 then foot[#foot + 1] = string.format("|cffff5555Not in sync yet (%d):|r %s", #behind, table.concat(behind, ", ")) end
   if #old > 0 then foot[#foot + 1] = string.format("|cff808080Can't sync, old version (%d):|r %s", #old, table.concat(old, ", ")) end
+  local bench = {}
+  for _, b in ipairs(ns.BenchedHosts()) do bench[#bench + 1] = string.format("%s (%dm)", b.name, math.ceil(b.left / 60)) end
+  if #bench > 0 then
+    foot[#foot + 1] = string.format("|cffff9966Benched as host (stalled or didn't answer):|r %s", table.concat(bench, ", "))
+  end
   win.footer:SetText(table.concat(foot, "\n"))
 
   -- lay out the lower parts under however many rows there are
@@ -178,7 +200,7 @@ end
 
 local function Build()
   win = CreateFrame("Frame", "AuctionatorSyncMonitorFrame", UIParent, "BackdropTemplate")
-  win:SetSize(640, 200)
+  win:SetSize(700, 200)
   win:SetPoint("CENTER", 0, 150)
   win:SetFrameStrata("DIALOG")
   win:SetMovable(true)
@@ -237,9 +259,10 @@ local function Build()
     end
     row.name:SetWidth(COLS[2].x - COLS[1].x - 6)
     row.activity:SetWidth(COLS[3].x - COLS[2].x - 6)
+    row.amount:SetWidth(COLS[4].x - COLS[3].x - 6)
     local bar = CreateFrame("StatusBar", nil, row, "BackdropTemplate")
-    bar:SetSize(COLS[4].x - COLS[3].x - 10, 12)
-    bar:SetPoint("LEFT", COLS[3].x, 0)
+    bar:SetSize(COLS[5].x - COLS[4].x - 10, 12)
+    bar:SetPoint("LEFT", COLS[4].x, 0)
     bar:SetMinMaxValues(0, 100)
     bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
     bar:SetStatusBarColor(0.2, 0.6, 1, 0.85)
