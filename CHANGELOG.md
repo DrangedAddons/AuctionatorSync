@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.0
+**Protocol 4: any in-sync player can host, and big syncs pull from several hosts at once.** Everyone needs 0.16.0; older versions show as "needs update".
+- **No single host any more.** Anyone who holds the master list can host a handshake. A newcomer picks the least busy one (Battle.net friends first among equals, then at random), so people logging in together spread out instead of queueing behind one player. Each finished player becomes another possible host.
+- **Swarming:** when more than 16 of the 256 sections differ (a first sync, or someone back after a while), the sections are split across up to 4 in-sync hosts at once, each merging and sending back its share. The game limits how fast each player can send, so several senders make big syncs up to about 4x faster. If a host goes quiet, its share moves to another.
+- **The master list is the fingerprint most ready players hold** (ties: the one with the newer newest price). Each player now also shares the time of their newest price. When two versions of the list meet, they're merged by the next handshake (the 2-minute self-repair), and nothing is lost, because merging is newest-wins per item in any order.
+- **Online table:** "handshaking with Lexi Ble +2 (61%)" shows progress; "in sync - hosting 2" shows who's serving; the crown marks players hosting right now. Hover a row for that player's newest price time.
+- **Log:** who is comparing with whom, how the differing sections were split ("splitting across 3 hosts: Lexi Ble (40), Fred Dingo (40), Grove (39)"), what each host sent, reassignments, and who is hosting.
+
 ## 0.15.13
 - Descriptions now say when prices are shared: whenever someone views or scans the auction house and discovers new prices.
 

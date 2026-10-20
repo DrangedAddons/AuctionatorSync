@@ -7,7 +7,7 @@ local OPTIONS = {
   { key = "shareScans", label = "Share my scans with everyone online",
     tip = "When an Auctionator scan finishes, or you close the auction house after searching, the prices that changed go to everyone online with AuctionatorSync." },
   { key = "catchUpOnLogin", label = "Sync when I log in",
-    tip = "Handshake with the host (whoever holds the master list) when you come online, so you start with the newest prices." },
+    tip = "Handshake with in-sync players when you come online, so you start with the master list (the newest prices)." },
   { key = "announce", label = "Show chat messages",
     tip = "Sign-in and sync messages in chat. Replies to /async commands and Sync now always show." },
   { key = "minimapShown", label = "Show minimap button",
@@ -164,9 +164,9 @@ end
 
 ----------------------------------------------------------------------------------------------
 -- Online list: a table of everyone online with AuctionatorSync (this character included):
--- Player | Version | Status. The host (holds the master list and hands it to newcomers) is
+-- Player | Version | Status. Anyone hosting a handshake right now (any in-sync player can) is
 -- first, with a crown. Click the header to fold it to one summary line.
---   in sync           same fingerprint as the host: the same master list
+--   in sync           holds the master list (the fingerprint most ready players have)
 --   handshaking with  getting the master list right now
 --   waiting to sync   online, handshake not started yet
 --   not in sync yet   different prices (a fresh scan going out, or about to re-sync)
@@ -298,7 +298,10 @@ local function TableRow(i)
     GameTooltip:AddLine(d.text, tonumber(d.color:sub(1, 2), 16) / 255, tonumber(d.color:sub(3, 4), 16) / 255,
       tonumber(d.color:sub(5, 6), 16) / 255)
     GameTooltip:AddLine("Last sync: " .. (d.lastSync and date("%d %b %H:%M", d.lastSync) or "unknown"), 0.7, 0.7, 0.7)
-    if d.host then GameTooltip:AddLine("Host: holds the master list and hands it to whoever comes online.", 1, 0.82, 0, true) end
+    if d.newest then
+      GameTooltip:AddLine("Newest price: " .. date("%d %b %H:%M", d.newest), 0.7, 0.7, 0.7)
+    end
+    if d.host then GameTooltip:AddLine("Hosting a handshake right now.", 1, 0.82, 0, true) end
     GameTooltip:Show()
   end)
   row:SetScript("OnLeave", GameTooltip_Hide)
@@ -380,7 +383,7 @@ local function RefreshOnline()
       if data.lastSync then
         row.last:SetText("|cff" .. SyncAgeColor(data.lastSync) .. Ago(data.lastSync) .. "|r")
       else
-        -- no time to show: the host holds the master list, so it's in sync by definition
+        -- no time to show, but hosting: it holds the master list, so it's in sync by definition
         row.last:SetText(data.host and "|cff33ff99host|r" or "|cff808080-|r")
       end
       row:Show()
@@ -519,8 +522,8 @@ local function Build()
   header:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     GameTooltip:SetText(ns.db.onlineExpanded == false and "Click to show everyone" or "Click to fold to a summary")
-    GameTooltip:AddLine("|T" .. CROWN .. ":0|t host: holds the master list and hands it to whoever comes online.", 1, 1, 1, true)
-    GameTooltip:AddLine("|cff33ff99in sync|r: the same master list as the host.", 1, 1, 1, true)
+    GameTooltip:AddLine("|T" .. CROWN .. ":0|t hosting: serving a handshake right now. Anyone in sync can host.", 1, 1, 1, true)
+    GameTooltip:AddLine("|cff33ff99in sync|r: holds the master list (the price list most players have).", 1, 1, 1, true)
     GameTooltip:AddLine("|cffffd100handshaking / waiting to sync|r: getting the master list.", 1, 1, 1, true)
     GameTooltip:AddLine("|cffff5555not in sync yet|r: different prices for now (a fresh scan going out, or re-syncing within 2 minutes).", 1, 1, 1, true)
     GameTooltip:AddLine("|cff808080needs update|r: an older AuctionatorSync that can't sync with this one.", 1, 1, 1, true)

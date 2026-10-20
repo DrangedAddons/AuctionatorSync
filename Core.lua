@@ -6,7 +6,7 @@ local addonName, ns = ...
 local GetMeta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
 ns.VERSION = (GetMeta and GetMeta(addonName, "Version")) or "?"
 ns.PREFIX = "AucSync"
-ns.PROTOCOL = 3
+ns.PROTOCOL = 4
 
 -- Account-wide: the Auctionator price database these settings act on is account-wide too.
 local DEFAULTS = {
