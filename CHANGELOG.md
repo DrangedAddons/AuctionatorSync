@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.17.2
+- **Handshake progress covers the whole handshake**, not just the last step: comparing, then sending your prices to the hosts, then receiving theirs, weighted by how many prices each moves. The step shows next to the percentage: "handshaking with Lexi Ble +2 - sending 1,500 / 4,000 (31%)" in the online table, and "Handshaking: sending 1,500 / 4,000" in the Sync Monitor (other players see it too).
+- The log covers the comparing step: when the section sums have actually gone out, and how many sections the host says differ.
+- The Sync Monitor is a little wider to fit.
+
 ## 0.17.1
 - The Sync Monitor has its own buttons instead of opening with the log: **Monitor** in `/async` (next to Log) and **Sync Monitor** at the top of the log window. Opened from the log while the settings window is closed, it docks to the log. Also `/async monitor`.
 - The `/async` buttons are a little narrower to make room.

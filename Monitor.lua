@@ -12,10 +12,10 @@ local ROW_H, MAX_ROWS, MAX_DETAIL = 20, 10, 6
 local COLS = {
   { key = "name", label = "Player", x = 8 },
   { key = "activity", label = "Activity", x = 140 },
-  { key = "progress", label = "Progress", x = 286 },
-  { key = "hosts", label = "Hosts", x = 404 },
-  { key = "hosting", label = "Hosting", x = 450 },
-  { key = "target", label = "Syncing to", x = 512 },
+  { key = "progress", label = "Progress", x = 336 },
+  { key = "hosts", label = "Hosts", x = 444 },
+  { key = "hosting", label = "Hosting", x = 490 },
+  { key = "target", label = "Syncing to", x = 552 },
 }
 
 local function Short(fp) return fp and tostring(fp):sub(1, 8) or "-" end
@@ -29,10 +29,10 @@ local function Ago(ts)
 end
 
 -- One player's activity: { name, activity, progress, hosts, hosting, target, color } or nil if idle.
-local function Activity(name, st, pg, hc, tg, rp, sp, hl, rx, master)
+local function Activity(name, st, pg, hc, tg, rp, sp, hl, rx, master, ph)
   local parts, progress, color = {}, nil, "ffd100"
   if st == "syncing" then
-    parts[#parts + 1] = "Handshaking"
+    parts[#parts + 1] = "Handshaking" .. (ph and (": " .. ph) or "")
     progress = pg or 0
   elseif st == "waiting" then
     parts[#parts + 1] = "Looking for hosts"
@@ -58,7 +58,7 @@ local function Gather()
   local master = ns.Master()
   local active, inSync, behind, old = {}, {}, {}, {}
   local mine = Activity(ns.MyName(), ns.state, ns.syncProgress, ns.MyHostsCount(), ns.MyTarget(),
-    ns.ReceiveProgress(), ns.SendProgress(), ns.HostingCount(), ns.Receiving(), master)
+    ns.ReceiveProgress(), ns.SendProgress(), ns.HostingCount(), ns.Receiving(), master, ns.syncPhase)
   if mine then
     mine.me = true
     active[#active + 1] = mine
@@ -72,7 +72,7 @@ local function Gather()
       if not ns.IsCompatible(peer) then
         old[#old + 1] = peer.name .. " (v" .. tostring(peer.version) .. ")"
       else
-        local a = Activity(peer.name, peer.st, peer.pg, peer.hc, peer.tg, peer.rp, peer.sp, peer.hl, peer.rx, master)
+        local a = Activity(peer.name, peer.st, peer.pg, peer.hc, peer.tg, peer.rp, peer.sp, peer.hl, peer.rx, master, peer.ph)
         if a then
           active[#active + 1] = a
         elseif peer.d == master then
@@ -178,7 +178,7 @@ end
 
 local function Build()
   win = CreateFrame("Frame", "AuctionatorSyncMonitorFrame", UIParent, "BackdropTemplate")
-  win:SetSize(600, 200)
+  win:SetSize(640, 200)
   win:SetPoint("CENTER", 0, 150)
   win:SetFrameStrata("DIALOG")
   win:SetMovable(true)

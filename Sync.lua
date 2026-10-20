@@ -343,11 +343,13 @@ function ns.SendEntries(target, list, prio, k, extra)
           floor(sentSoFar / n * 100))
       end
       if out.sent >= n then ns.outgoing[out] = nil end
+      if ns.OnSendProgress then ns.OnSendProgress() end
       ns.AnnounceState()
     end or nil
     if target then ns.Send(target, msg, prio, nil, onSent) else ns.Broadcast(msg, prio, nil, onSent) end
     i = last + 1
   until i > n
+  return out -- { tot, sent } for whoever wants to follow it (handshake progress)
 end
 
 ----------------------------------------------------------------------------------------------
@@ -407,7 +409,7 @@ local stateTimer
 local function StateMsg(t)
   return { t = t or "STATE", r = ns.RealmKey(), st = ns.state, d = ns.Fingerprint(), os = ns.onlineSince,
     w = ns.syncingWith, ls = ns.LastSync(), nt = newestTs, hl = HostingCount(), pg = ns.syncProgress,
-    rx = ns.Receiving and ns.Receiving() or 0, hc = ns.MyHostsCount and ns.MyHostsCount() or nil,
+    rx = ns.Receiving and ns.Receiving() or 0, ph = ns.state == "syncing" and ns.syncPhase or nil, hc = ns.MyHostsCount and ns.MyHostsCount() or nil,
     tg = ns.MyTarget and ns.MyTarget() or nil, rp = ns.ReceiveProgress and ns.ReceiveProgress() or nil,
     sp = ns.SendProgress and ns.SendProgress() or nil }
 end
@@ -609,22 +611,35 @@ local function HostNames()
   return names[1] .. (#names > 1 and (" +" .. (#names - 1)) or "")
 end
 
+-- Progress over the whole handshake, by prices moved: what we've uploaded to each host plus what
+-- each host has sent back (until a reply's size is known, assume it's about what we sent).
+-- The step we're on goes in ns.syncPhase: "comparing", "sending x / y" or "receiving x / y".
 local function UpdateProgress()
   if not join then return end
-  local done, total = 0, 0
-  for _, piece in pairs(join.pieces) do
-    local n = #piece.list
-    total = total + n
-    if piece.done then
-      done = done + n
-    elseif piece.tot and piece.tot > 0 then
-      done = done + n * math.min(1, piece.received / piece.tot) * 0.99
-    end
+  if not next(join.pieces) then
+    ns.syncProgress, ns.syncPhase = 1, "comparing"
+    ns.AnnounceState()
+    return
   end
-  ns.syncProgress = total > 0 and floor(done / total * 100) or 0
+  local upDone, upTot, inDone, inTot = 0, 0, 0, 0
+  for _, piece in pairs(join.pieces) do
+    local ut = piece.up and piece.up.tot or 0
+    local ud = piece.up and piece.up.sent or 0
+    local rt = piece.tot or math.max(ut, 1)
+    local rd = piece.done and rt or math.min(piece.received or 0, rt)
+    upDone, upTot, inDone, inTot = upDone + ud, upTot + ut, inDone + rd, inTot + rt
+  end
+  local total = upTot + inTot
+  ns.syncProgress = total > 0 and math.min(99, math.max(1, floor((upDone + inDone) / total * 100))) or 1
+  if upDone < upTot then
+    ns.syncPhase = string.format("sending %s / %s", ns.Num(upDone), ns.Num(upTot))
+  else
+    ns.syncPhase = string.format("receiving %s / %s", ns.Num(inDone), ns.Num(inTot))
+  end
   ns.syncingWith = HostNames()
   ns.AnnounceState()
 end
+ns.OnSendProgress = function() if join then UpdateProgress() end end
 
 local function FinishJoin(verbose, changed, via)
   local r = Realm()
@@ -676,7 +691,7 @@ SendPiece = function(piece)
   local items = ItemsIn(piece.set)
   ns.Log("%s sends %s %s from %d sections to merge", ns.MyName(), piece.host.name,
     ns.Plural(#items, "price"), #piece.list)
-  ns.SendEntries(ns.ReplyTarget(piece.host), items, "BULK", "join", { bk = piece.list, pc = piece.id })
+  piece.up = ns.SendEntries(ns.ReplyTarget(piece.host), items, "BULK", "join", { bk = piece.list, pc = piece.id })
   ArmPiece(piece)
   UpdateProgress()
 end
@@ -736,7 +751,11 @@ local function StartHandshake(verbose, probe)
     (probe.hl or 0) > 0 and (", hosting " .. probe.hl) or "", ns.Plural(itemCount, "price"))
   local b = {}
   for i = 0, SECTIONS - 1 do b[i + 1] = sections[i] end
-  ns.Send(ns.ReplyTarget(probe), { t = "SUM", r = ns.RealmKey(), b = b }, "ALERT")
+  ns.syncPhase = "comparing"
+  ns.Send(ns.ReplyTarget(probe), { t = "SUM", r = ns.RealmKey(), b = b }, "ALERT", nil, function()
+    ns.Log("%s sent its section sums to %s; waiting for the comparison", ns.MyName(), probe.name)
+  end)
+  UpdateProgress()
   local mine = join
   join.timer = C_Timer.NewTimer(JOIN_TIMEOUT, function()
     if join ~= mine or next(mine.pieces) then return end
@@ -832,6 +851,7 @@ local function NoteState(peer, msg, isHello)
   peer.ls, peer.nt, peer.hl, peer.pg = tonumber(msg.ls), tonumber(msg.nt), tonumber(msg.hl) or 0, tonumber(msg.pg)
   peer.rx = tonumber(msg.rx) or 0
   peer.hc, peer.tg, peer.rp, peer.sp = tonumber(msg.hc), msg.tg, tonumber(msg.rp), tonumber(msg.sp)
+  peer.ph = msg.ph
   peer.lastHeard = ns.Now()
   if isHello or wasOffline then
     ns.Log("%s came online (v%s)", peer.name, tostring(peer.version))
@@ -911,6 +931,7 @@ function ns.OnMessage(msg, peer)
       FinishJoin(join.verbose, 0, peer.name)
       return
     end
+    ns.Log("%s answered: %d of %d sections differ", peer.name, #bk, SECTIONS)
     StartPieces(bk)
 
   elseif msg.t == "DATA" then
@@ -1201,11 +1222,12 @@ end)
 -- handshaking, waiting, not in sync, needs update.
 function ns.StatusRows()
   local master = ns.Master()
-  local function Text(st, d, with, pg, hl, compatible, rx)
+  local function Text(st, d, with, pg, hl, compatible, rx, ph)
     if not compatible then return "needs update", "808080", 5 end
     if st == "ready" and d ~= master and (rx or 0) > 0 then return "receiving updates", "ffd100", 2 end
     if st == "syncing" then
-      return "handshaking" .. (with and (" with " .. with) or "") .. (pg and (" (" .. pg .. "%)") or ""), "ffd100", 2
+      return "handshaking" .. (with and (" with " .. with) or "") .. (ph and (" - " .. ph) or "")
+        .. (pg and (" (" .. pg .. "%)") or ""), "ffd100", 2
     end
     if st ~= "ready" then return "waiting to sync", "ffd100", 3 end
     if master and d == master then
@@ -1216,12 +1238,12 @@ function ns.StatusRows()
   local rows = {}
   local myHl = HostingCount()
   local myText, myColor, myRank = Text(ns.state, ns.Fingerprint(), ns.syncingWith, ns.syncProgress, myHl, true,
-    ns.Receiving())
+    ns.Receiving(), ns.syncPhase)
   rows[#rows + 1] = { name = ns.MyName(), version = ns.VERSION, text = myText, color = myColor, rank = myRank,
     lastSync = ns.LastSync(), newest = newestTs > 0 and newestTs or nil, host = myHl > 0, me = true }
   for _, peer in pairs(ns.peers) do
     if ns.IsPeerOnline(peer) and not peer.otherRealm then
-      local t, c, rank = Text(peer.st, peer.d, peer.w, peer.pg, peer.hl, Compatible(peer), peer.rx)
+      local t, c, rank = Text(peer.st, peer.d, peer.w, peer.pg, peer.hl, Compatible(peer), peer.rx, peer.ph)
       rows[#rows + 1] = { name = peer.name, version = peer.version, text = t, color = c, rank = rank,
         lastSync = peer.ls, newest = peer.nt, host = (peer.hl or 0) > 0 }
     end
