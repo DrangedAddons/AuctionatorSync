@@ -449,6 +449,8 @@ local function Build()
   win = CreateFrame("Frame", "AuctionatorSyncPriceListFrame", UIParent, "BackdropTemplate")
   win:SetSize(760, 500)
   win:SetPoint("CENTER")
+  -- dragged somewhere: remember it (window positions survive reloads and updates)
+  function win:OnMoved() ns.SavePosition(self, "priceList") end
   win:SetFrameStrata("DIALOG")
   win:SetMovable(true)
   win:EnableMouse(true)
@@ -890,7 +892,10 @@ end
 
 function ns.TogglePriceList()
   if not win then Build() end
-  if not win:IsShown() then ns.PlaceWindow(win) end
+  if not win:IsShown() then
+    -- where you last put it; never placed yet: dock beside whatever's open
+    if not ns.RestorePosition(win, "priceList") then ns.PlaceWindow(win) end
+  end
   win:SetShown(not win:IsShown())
 end
 

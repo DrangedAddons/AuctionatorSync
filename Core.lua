@@ -212,6 +212,24 @@ function ns.DragStop(f)
   local mover = f.dragMover or f
   f.dragMover = nil
   mover:StopMovingOrSizing()
+  if mover.OnMoved then mover:OnMoved() end
+end
+
+-- Remembered window positions (saved data, so they survive /reload, relogs and updates).
+function ns.SavePosition(frame, key)
+  local point, rel, relPoint, x, y = frame:GetPoint(1)
+  if not point or (rel and rel ~= UIParent) then return end -- docked to another window: nothing to save
+  ns.db.positions = ns.db.positions or {}
+  ns.db.positions[key] = { point, relPoint, x, y }
+end
+
+-- true if a saved position was put back
+function ns.RestorePosition(frame, key)
+  local p = ns.db.positions and ns.db.positions[key]
+  if not p then return false end
+  frame:ClearAllPoints()
+  frame:SetPoint(p[1], UIParent, p[2], p[3], p[4])
+  return true
 end
 
 -- Price List shortcuts: /ah, and a key binding (Bindings.xml; set the key in the game's

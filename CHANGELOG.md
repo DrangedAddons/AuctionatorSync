@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.19.3
+- The Price List remembers where you put it, across /reload, relogs and updates. Once moved, it always reopens there (other windows still dock beside it). Until you've moved it, it opens docked as before.
+
 ## 0.19.2
 - **A much quieter log:** only activity now. Who came online or went offline, "X is syncing with Y", "X is in sync", scans being shared and updates arriving, and problems (dropped or benched hosts, failed syncs, players who can't sync). Batch-by-batch progress, section comparisons, piece splits and merge details are no longer logged: the Sync Monitor shows that live.
 
