@@ -353,7 +353,7 @@ function ns.SendEntries(target, list, prio, k, extra)
       end
       if out.sent >= n then ns.outgoing[out] = nil end
       if ns.OnSendProgress then ns.OnSendProgress() end
-      ns.AnnounceState()
+      ns.AnnounceState(true)
       if last < n then SendBatch(last + 1) end
     end
     if target then ns.Send(target, msg, prio, nil, onSent) else ns.Broadcast(msg, prio, nil, onSent) end
@@ -448,12 +448,25 @@ local function StateMsg(t)
 end
 
 -- Tell everyone our state/fingerprint (debounced: several changes in a row send one message).
-function ns.AnnounceState()
-  if stateTimer then return end
-  stateTimer = C_Timer.NewTimer(2, function()
+-- progressOnly: just a progress number moved. Those wait until PROGRESS_EVERY seconds after the
+-- last announcement, so status messages don't eat the bandwidth the transfer itself needs.
+-- Real changes (state, fingerprint, hosting...) still go out within 2 seconds.
+local PROGRESS_EVERY = 10
+local lastAnnounced = 0
+local stateTimerProgressOnly = false
+function ns.AnnounceState(progressOnly)
+  if stateTimer then
+    if progressOnly or not stateTimerProgressOnly then return end
+    stateTimer:Cancel() -- a real change arrived while a progress-only update was waiting: hurry it
+  end
+  local delay = 2
+  if progressOnly then delay = math.max(2, PROGRESS_EVERY - (GetTime() - lastAnnounced)) end
+  stateTimer = C_Timer.NewTimer(delay, function()
     stateTimer = nil
+    lastAnnounced = GetTime()
     if ns.RealmKey() then ns.Broadcast(StateMsg(), "NORMAL") end
   end)
+  stateTimerProgressOnly = progressOnly and true or false
 end
 
 local function SetState(st, with)
@@ -715,7 +728,7 @@ local function UpdateProgress()
   end
   ns.syncPhase = string.format("%s %s / %s", ns.syncStep, ns.Num(ns.syncDone), ns.Num(ns.syncTotal))
   ns.syncingWith = HostNames()
-  ns.AnnounceState()
+  ns.AnnounceState(true)
 end
 ns.OnSendProgress = function()
   if not join then return end
@@ -1110,7 +1123,7 @@ function ns.OnMessage(msg, peer)
       piece.lastProgress = ns.Now()
       UpdateProgress()
     elseif tr.kind ~= "join" then
-      ns.AnnounceState() -- receive progress
+      ns.AnnounceState(true) -- receive progress
     end
     local tot = tonumber(msg.tot)
     if tot and tot > BATCH then

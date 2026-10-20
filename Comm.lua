@@ -162,7 +162,18 @@ function ns.Broadcast(msg, prio, discover, onSent)
     ns.Send({ kind = "GUILD" }, msg, prio, id, Sent)
     routes[#routes + 1] = "guild"
   end
-  if ns.channelId then
+  -- The hidden channel: always when looking for people (discover), otherwise only if someone
+  -- online is reachable that way and not through the guild (no point sending everything twice).
+  local needChannel = discover or not IsInGuild()
+  if not needChannel then
+    for _, peer in pairs(ns.peers) do
+      if ns.IsPeerOnline(peer) and peer.routes.channel and not peer.routes.guild then
+        needChannel = true
+        break
+      end
+    end
+  end
+  if ns.channelId and needChannel then
     ns.Send({ kind = "CHANNEL", channel = ns.channelId }, msg, prio, id, Sent)
     routes[#routes + 1] = "channel"
   end

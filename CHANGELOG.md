@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.19.1
+- **Less status chatter during transfers, so handshakes get more of the bandwidth.** Progress-only status updates (a percentage moving) now go out at most every 10 seconds; real changes (starting or finishing a sync, a new fingerprint, hosting) still go out within 2 seconds. Before, a transfer sent a status update every 2 seconds, which used up a large share of the game's limited allowance for addon messages.
+- Status updates go on the hidden channel only when someone online can't be reached through the guild, instead of on both every time. Logins still look everywhere.
+- (The log itself never sends anything: it's only on your own screen.)
+
 ## 0.19.0
 - **Stalled handshakes are dropped and moved on.** A handshake piece is only kept alive while prices are actually moving (our upload batches going out or the host's reply batches arriving). Before, any message from the host, even its once-a-minute heartbeat, kept a stuck piece alive forever. If nothing moves for 60 seconds:
   - the host is told to stop (it stops sending that piece and stops hosting it),
