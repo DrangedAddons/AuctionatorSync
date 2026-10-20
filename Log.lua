@@ -37,6 +37,16 @@ local function Build()
   local clear = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
   clear:SetSize(70, 20)
   clear:SetPoint("RIGHT", close, "LEFT", -4, 0)
+
+  -- the Sync Monitor, docked to this log when the settings window isn't open
+  local monitor = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
+  monitor:SetSize(100, 20)
+  monitor:SetPoint("RIGHT", clear, "LEFT", -4, 0)
+  monitor:SetText("Sync Monitor")
+  monitor:SetScript("OnClick", function()
+    local settingsOpen = AuctionatorSyncFrame and AuctionatorSyncFrame:IsShown()
+    ns.ToggleMonitor(not settingsOpen and win or nil)
+  end)
   clear:SetText("Clear")
   clear:SetScript("OnClick", function()
     wipe(ns.store.log)
@@ -72,10 +82,9 @@ local function Build()
   grip:SetScript("OnMouseDown", function() win:StartSizing("BOTTOMRIGHT") end)
   grip:SetScript("OnMouseUp", function() win:StopMovingOrSizing() end)
 
-  win:HookScript("OnHide", function() ns.ShowMonitor(false) end) -- and closes with it
   win:SetScript("OnShow", function()
     win.state:SetText(ns.db.verbose and "|cff33ff99recording|r"
-      or "|cffff9966not recording - tick Verbose mode in /async|r")
+      or "|cffff9966not recording (Verbose mode is off)|r")
     lines:Clear()
     for _, line in ipairs(ns.store.log) do lines:AddMessage(line) end
     lines:ScrollToBottom()
@@ -93,7 +102,6 @@ function ns.ShowLog(show)
     -- dock beside whichever AuctionatorSync windows are open, without overlapping
     if not win:IsShown() then ns.PlaceWindow(win) end
     if win:IsShown() then win:GetScript("OnShow")() else win:Show() end
-    ns.ShowMonitor(true) -- the Sync Monitor opens alongside the log
   else
     win:Hide()
   end

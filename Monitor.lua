@@ -273,15 +273,21 @@ local function Build()
   win:Hide()
 end
 
-function ns.ShowMonitor(show)
+-- from: the window whose button opened it (docks against that one first, e.g. the log).
+function ns.ShowMonitor(show, from)
   if not win then Build() end
   if show then
     if not win:IsShown() then
-      ns.PlaceWindow(win)
+      ns.PlaceWindow(win, from)
       win:Show()
     end
     Refresh()
   else
     win:Hide()
   end
+end
+
+function ns.ToggleMonitor(from)
+  if not win then Build() end
+  ns.ShowMonitor(not win:IsShown(), from)
 end

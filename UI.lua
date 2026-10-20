@@ -486,20 +486,26 @@ local function Build()
   end
 
   local sync = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  sync:SetSize(120, 24)
+  sync:SetSize(90, 24)
   sync:SetPoint("TOPLEFT", 16, y - 8)
   sync:SetText("Sync now")
   sync:SetScript("OnClick", function() ns.CatchUp(true) end)
 
   local logButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  logButton:SetSize(60, 24)
+  logButton:SetSize(44, 24)
   logButton:SetPoint("TOPRIGHT", -16, y - 8)
   logButton:SetText("Log")
   logButton:SetScript("OnClick", function() ns.ToggleLog() end)
 
   local priceButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  priceButton:SetSize(84, 24)
-  priceButton:SetPoint("RIGHT", logButton, "LEFT", -4, 0)
+  priceButton:SetSize(76, 24)
+  priceButton:SetPoint("RIGHT", logButton, "LEFT", -72, 0) -- room for Monitor in between
+
+  local monitorButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+  monitorButton:SetSize(64, 24)
+  monitorButton:SetPoint("RIGHT", logButton, "LEFT", -4, 0)
+  monitorButton:SetText("Monitor")
+  monitorButton:SetScript("OnClick", function() ns.ToggleMonitor(frame) end)
   priceButton:SetText("Price List")
   priceButton:SetScript("OnClick", function() ns.TogglePriceList() end)
 

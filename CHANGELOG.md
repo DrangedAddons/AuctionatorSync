@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.1
+- The Sync Monitor has its own buttons instead of opening with the log: **Monitor** in `/async` (next to Log) and **Sync Monitor** at the top of the log window. Opened from the log while the settings window is closed, it docks to the log. Also `/async monitor`.
+- The `/async` buttons are a little narrower to make room.
+
 ## 0.17.0
 - **Sync Monitor:** a torrent-client style window that opens alongside the log (and closes with it), docked beside it.
   - Top line: the master list (short fingerprint), how many prices this character has, when the newest price was seen, and how many are online.

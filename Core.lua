@@ -143,11 +143,13 @@ end
 local WINDOWS = { "AuctionatorSyncFrame", "AuctionatorSyncPriceListFrame", "AuctionatorSyncLogFrame",
   "AuctionatorSyncMonitorFrame" }
 
-function ns.PlaceWindow(win)
+-- prefer: a window to dock against first, if it's open (e.g. the monitor opened from the log).
+function ns.PlaceWindow(win, prefer)
   local others = {}
+  if prefer and prefer ~= win and prefer:IsShown() and prefer:GetLeft() then others[1] = prefer end
   for _, name in ipairs(WINDOWS) do
     local f = _G[name]
-    if f and f ~= win and f:IsShown() and f:GetLeft() then others[#others + 1] = f end
+    if f and f ~= win and f ~= prefer and f:IsShown() and f:GetLeft() then others[#others + 1] = f end
   end
   if #others == 0 then return end
   local w, h = win:GetWidth(), win:GetHeight()
@@ -227,6 +229,8 @@ SlashCmdList.AUCTIONATORSYNC = function(msg)
     ns.PrintStatus()
   elseif cmd == "prices" or cmd == "pricelist" then
     ns.TogglePriceList()
+  elseif cmd == "monitor" then
+    ns.ToggleMonitor()
   elseif cmd == "log" or cmd == "debug" then
     ns.ToggleLog()
   elseif cmd == "" then
