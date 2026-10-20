@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.18.0
+- **Much faster handshakes for returning players.** A login handshake now only moves prices that can actually be new: the newcomer sends the prices it has seen since its last sync (at which point its list matched the master list), and the host sends back the prices it has seen since then plus any that differ from what the newcomer sent. Before, any section with a single different price was exchanged in full both ways, which after a scan meant nearly the whole price list (minutes, given the game's limit on addon messages). Someone who synced yesterday and hasn't scanned since now moves a few hundred prices instead of thousands.
+- If a quick handshake ever leaves someone not matching the master list (say they last synced with a different group), the self-repair runs a **full** handshake. A first-ever sync is always full. The log says which kind each handshake is.
+- "Last sync" only moves on once a handshake really ends matching the master list.
+- Item numbers are sent as numbers rather than text: about 15% less data.
+
 ## 0.17.2
 - **Handshake progress covers the whole handshake**, not just the last step: comparing, then sending your prices to the hosts, then receiving theirs, weighted by how many prices each moves. The step shows next to the percentage: "handshaking with Lexi Ble +2 - sending 1,500 / 4,000 (31%)" in the online table, and "Handshaking: sending 1,500 / 4,000" in the Sync Monitor (other players see it too).
 - The log covers the comparing step: when the section sums have actually gone out, and how many sections the host says differ.

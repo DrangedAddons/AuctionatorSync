@@ -38,6 +38,7 @@ local HELLO_WAIT = 5        -- seconds to collect answers to a HELLO
 local JOIN_TIMEOUT = 180    -- seconds without hearing from the host before trying again
 local HEARTBEAT = 60        -- seconds between STATE heartbeats
 local HEAL_AFTER = 120      -- seconds out of sync with the host before re-syncing
+local SINCE_MARGIN = 600    -- a quick handshake re-sends prices from a little before the last sync
 local SECTIONS = 256
 local TS_KEEP_DAYS = 60
 local TWO32 = 4294967296
@@ -328,7 +329,7 @@ function ns.SendEntries(target, list, prio, k, extra)
     local e = {}
     for j = i, last do
       local it = list[j]
-      e[#e + 1] = it[1]
+      e[#e + 1] = tonumber(it[1]) or it[1] -- plain item IDs as numbers: smaller than text
       e[#e + 1] = it[2]
       e[#e + 1] = it[3] or 0
       e[#e + 1] = it[4] - base
@@ -648,7 +649,8 @@ local function FinishJoin(verbose, changed, via)
     if join.timer then join.timer:Cancel() end
   end
   join = nil
-  if r then r.lastCatchUp = ns.Now() end
+  local master = ns.Master()
+  if r and (not master or ns.Fingerprint() == master) then r.lastCatchUp = ns.Now() end
   MarkSynced()
   SetState("ready")
   if via then
@@ -689,9 +691,21 @@ end
 
 SendPiece = function(piece)
   local items = ItemsIn(piece.set)
-  ns.Log("%s sends %s %s from %d sections to merge", ns.MyName(), piece.host.name,
-    ns.Plural(#items, "price"), #piece.list)
-  piece.up = ns.SendEntries(ns.ReplyTarget(piece.host), items, "BULK", "join", { bk = piece.list, pc = piece.id })
+  local all = #items
+  if join.since then
+    -- At our last sync our list matched the master list, so only prices seen since then can be
+    -- news to the host. (If that turns out wrong, the self-repair does a full handshake.)
+    local newer = {}
+    for _, it in ipairs(items) do
+      if it[4] > join.since then newer[#newer + 1] = it end
+    end
+    items = newer
+  end
+  ns.Log("%s sends %s %s from %d sections to merge%s", ns.MyName(), piece.host.name,
+    ns.Plural(#items, "price"), #piece.list,
+    join.since and string.format(" (only those seen since %s; %s in those sections)", date("%H:%M", join.since), ns.Num(all)) or "")
+  piece.up = ns.SendEntries(ns.ReplyTarget(piece.host), items, "BULK", "join",
+    { bk = piece.list, pc = piece.id, sn = join.since })
   ArmPiece(piece)
   UpdateProgress()
 end
@@ -739,16 +753,22 @@ local function StartPieces(bk)
 end
 
 -- Step 1: compare section sums with one host.
-local function StartHandshake(verbose, probe)
+-- full = compare everything; otherwise only prices seen since our last sync travel (see SendPiece).
+local function StartHandshake(verbose, probe, full)
   if join then
     for _, piece in pairs(join.pieces) do if piece.timer then piece.timer:Cancel() end end
     if join.timer then join.timer:Cancel() end
   end
-  join = { verbose = verbose, probe = probe, pieces = {}, bad = {}, changed = 0, nextId = 0, target = ns.Master() }
+  local r = Realm()
+  local last = r and r.lastCatchUp or 0
+  local since = (not full and last > 0) and (last - SINCE_MARGIN) or nil
+  join = { verbose = verbose, probe = probe, pieces = {}, bad = {}, changed = 0, nextId = 0, target = ns.Master(),
+    since = since, full = full }
   SetState("syncing", probe.name)
   ns.syncProgress = 0
-  ns.Log("%s is comparing with %s (in sync%s): %s", ns.MyName(), probe.name,
-    (probe.hl or 0) > 0 and (", hosting " .. probe.hl) or "", ns.Plural(itemCount, "price"))
+  ns.Log("%s is comparing with %s (in sync%s): %s, %s", ns.MyName(), probe.name,
+    (probe.hl or 0) > 0 and (", hosting " .. probe.hl) or "", ns.Plural(itemCount, "price"),
+    since and ("changes since last sync " .. date("%d %b %H:%M", last)) or "full compare")
   local b = {}
   for i = 0, SECTIONS - 1 do b[i + 1] = sections[i] end
   ns.syncPhase = "comparing"
@@ -764,7 +784,7 @@ local function StartHandshake(verbose, probe)
     if hosts[1] then
       ns.Log("%s didn't answer; comparing with %s instead", probe.name, hosts[1].name)
       local bad = mine.bad
-      StartHandshake(verbose, hosts[1])
+      StartHandshake(verbose, hosts[1], mine.full)
       join.bad = bad
     else
       GiveUp()
@@ -947,7 +967,7 @@ function ns.OnMessage(msg, peer)
       if tr.kind == "join" then
         local set = {}
         for _, s in ipairs(type(msg.bk) == "table" and msg.bk or {}) do set[tonumber(s)] = true end
-        tr.sections, tr.pc = set, msg.pc
+        tr.sections, tr.pc, tr.since = set, msg.pc, tonumber(msg.sn)
         hosting[tkey] = true
         ns.Log("%s is handshaking with %s (%d sections)", peer.name, ns.MyName(),
           type(msg.bk) == "table" and #msg.bk or 0)
@@ -1000,7 +1020,12 @@ function ns.OnMessage(msg, peer)
       end
       local reply = {}
       for _, it in ipairs(ItemsIn(tr.sections)) do
-        if tr.theirs[it[1]] ~= it[2] then reply[#reply + 1] = it end
+        local theirs = tr.theirs[it[1]]
+        -- not sent by them: they still have what they had at their last sync, so only prices
+        -- seen since then can be news (all of them, for a full handshake)
+        if (theirs ~= nil and theirs ~= it[2]) or (theirs == nil and (not tr.since or it[4] > tr.since)) then
+          reply[#reply + 1] = it
+        end
       end
       ns.Log("%s sends %s the master list for those sections: %s", ns.MyName(), peer.name, ns.Plural(#reply, "price"))
       ns.SendEntries(ns.ReplyTarget(peer), reply, "BULK", "reply", { pc = tr.pc, tot = #reply })
@@ -1086,7 +1111,7 @@ C_Timer.NewTicker(30, function()
       if hosts[1] then
         ns.Log("%s's prices have differed from the master list for %ds: re-syncing with %s",
           ns.MyName(), HEAL_AFTER, hosts[1].name)
-        StartHandshake(false, hosts[1])
+        StartHandshake(false, hosts[1], true) -- full: the quick one wasn't enough
       end
     end
   else
