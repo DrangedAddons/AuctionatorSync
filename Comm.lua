@@ -36,7 +36,7 @@ function ns.JoinChannel()
     id = GetChannelName(CHANNEL_NAME)
   end
   if id and id > 0 then
-    if ns.channelId ~= id then ns.Log("joined the hidden AuctionatorSync channel (#%d)", id) end
+    if ns.channelId ~= id then ns.Detail("joined the hidden AuctionatorSync channel (#%d)", id) end
     ns.channelId = id
     HideChannel()
   else

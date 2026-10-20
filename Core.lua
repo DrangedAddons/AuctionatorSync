@@ -59,7 +59,10 @@ function ns.Log(fmt, ...)
   if #log > LOG_MAX then table.remove(log, 1) end
   if ns.OnLogLine then ns.OnLogLine(line) end
 end
-ns.Debug = ns.Log
+-- Step-by-step detail (batches, sections, merges): the Sync Monitor shows that live, so the log
+-- leaves it out. Kept as calls so a line can be brought back by switching it to ns.Log.
+function ns.Detail() end
+ns.Debug = ns.Detail
 
 function ns.Now()
   return GetServerTime and GetServerTime() or time()
@@ -92,7 +95,7 @@ local handlers = {}
 -- Forever throws on unknown events, so check each one first.
 function ns.On(event, fn)
   if C_EventUtils and C_EventUtils.IsEventValid and not C_EventUtils.IsEventValid(event) then
-    ns.Debug("event %s not available on this client", event)
+    ns.Detail("event %s not available on this client", event)
     return
   end
   handlers[event] = handlers[event] or {}

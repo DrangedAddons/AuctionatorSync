@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.19.2
+- **A much quieter log:** only activity now. Who came online or went offline, "X is syncing with Y", "X is in sync", scans being shared and updates arriving, and problems (dropped or benched hosts, failed syncs, players who can't sync). Batch-by-batch progress, section comparisons, piece splits and merge details are no longer logged: the Sync Monitor shows that live.
+
 ## 0.19.1
 - **Less status chatter during transfers, so handshakes get more of the bandwidth.** Progress-only status updates (a percentage moving) now go out at most every 10 seconds; real changes (starting or finishing a sync, a new fingerprint, hosting) still go out within 2 seconds. Before, a transfer sent a status update every 2 seconds, which used up a large share of the game's limited allowance for addon messages.
 - Status updates go on the hidden channel only when someone online can't be reached through the guild, instead of on both every time. Logins still look everywhere.

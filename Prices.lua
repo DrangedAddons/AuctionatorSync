@@ -88,7 +88,7 @@ local function WarmTick()
     if now - w[1] > GIVE_UP_AFTER then
       waiting[id] = nil
       failed[id] = true
-      ns.Log("item %d never loaded its details; left out of the Price List", id)
+      ns.Detail("item %d never loaded its details; left out of the Price List", id)
     elseif now - w[2] > RETRY_AFTER and not Remember(id) then
       w[2] = now
     end
@@ -99,7 +99,7 @@ local function WarmTick()
   if finished then
     warmTicker:Cancel()
     warmTicker = nil
-    ns.Log("Price List item details ready: %s known", ns.Plural(select(2, ns.NameProgress()), "item"))
+    ns.Detail("Price List item details ready: %s known", ns.Plural(select(2, ns.NameProgress()), "item"))
   end
 end
 
@@ -113,7 +113,7 @@ function ns.WarmNames()
     if (not book[id] or not book[id][3]) and not failed[id] then queue[#queue + 1] = id end
   end
   if #queue == 0 then return end
-  ns.Log("Price List: loading item details for %s in the background", ns.Plural(#queue, "item"))
+  ns.Detail("Price List: loading item details for %s in the background", ns.Plural(#queue, "item"))
   if not warmTicker then warmTicker = C_Timer.NewTicker(WARM_TICK, WarmTick) end
 end
 

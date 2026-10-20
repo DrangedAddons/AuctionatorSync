@@ -59,7 +59,7 @@ function ns.Encode(tbl)
     return Base64Encode(packed)
   end)
   if ok then return text end
-  ns.Debug("encode failed: %s", tostring(text))
+  ns.Detail("encode failed: %s", tostring(text))
 end
 
 function ns.Decode(text)
@@ -70,5 +70,5 @@ function ns.Decode(text)
     return cbor and E.DeserializeCBOR(cbor)
   end)
   if ok and type(tbl) == "table" then return tbl end
-  ns.Debug("decode failed: %s", tostring(tbl))
+  ns.Detail("decode failed: %s", tostring(tbl))
 end

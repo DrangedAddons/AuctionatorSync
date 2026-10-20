@@ -210,7 +210,7 @@ function ns.HookAuctionator()
   hooksecurefunc(db, "SetPrice", function(self, key, price, available)
     if self == hookedDB then OnLocalPrice(key, price, available) end
   end)
-  ns.Log("watching Auctionator's prices for %s: %s, fingerprint %s",
+  ns.Detail("watching Auctionator's prices for %s: %s, fingerprint %s",
     tostring(ns.RealmKey()), ns.Plural(itemCount, "price"), ns.Fingerprint())
 end
 
@@ -349,7 +349,7 @@ function ns.SendEntries(target, list, prio, k, extra)
     local function onSent()
       out.sent = math.max(out.sent, last)
       if batches > 1 and n > 0 then
-        ns.Log("%s: sent %s / %s (%s, %d%%)", label, ns.Num(last), ns.Plural(n, "price"), what, floor(last / n * 100))
+        ns.Detail("%s: sent %s / %s (%s, %d%%)", label, ns.Num(last), ns.Plural(n, "price"), what, floor(last / n * 100))
       end
       if out.sent >= n then ns.outgoing[out] = nil end
       if ns.OnSendProgress then ns.OnSendProgress() end
@@ -753,8 +753,7 @@ local function FinishJoin(verbose, changed, via)
   MarkSynced()
   SetState("ready")
   if via then
-    ns.Log("%s is in sync (via %s): master list %s, fingerprint %s", ns.MyName(), via,
-      ns.Plural(itemCount, "price"), ns.Fingerprint())
+    ns.Log("%s is in sync (via %s)", ns.MyName(), via)
   end
   if changed and changed > 0 then
     Say(verbose, "Synced: updated %s.", ns.Plural(changed, "price"))
@@ -802,7 +801,7 @@ SendPiece = function(piece)
     end
     items = newer
   end
-  ns.Log("%s sends %s %s from %d sections to merge%s", ns.MyName(), piece.host.name,
+  ns.Detail("%s sends %s %s from %d sections to merge%s", ns.MyName(), piece.host.name,
     ns.Plural(#items, "price"), #piece.list,
     join.since and string.format(" (only those seen since %s; %s in those sections)", date("%H:%M", join.since), ns.Num(all)) or "")
   piece.up = ns.SendEntries(ns.ReplyTarget(piece.host), items, "BULK", "join",
@@ -848,7 +847,7 @@ local function StartPieces(bk)
       parts[#parts + 1] = string.format("%s (%d)", h.name, #list)
     end
   end
-  ns.Log("%d of %d sections differ: %s", #bk, SECTIONS, #parts > 1
+  ns.Detail("%d of %d sections differ: %s", #bk, SECTIONS, #parts > 1
     and ("splitting across " .. #parts .. " hosts: " .. table.concat(parts, ", ")) or ("all from " .. join.probe.name))
   for _, piece in pairs(join.pieces) do SendPiece(piece) end
 end
@@ -867,15 +866,13 @@ local function StartHandshake(verbose, probe, full)
     since = since, full = full }
   SetState("syncing", probe.name)
   ns.syncProgress = 0
-  ns.Log("%s is comparing with %s (in sync%s): %s, %s", ns.MyName(), probe.name,
-    (probe.hl or 0) > 0 and (", hosting " .. probe.hl) or "", ns.Plural(itemCount, "price"),
-    since and ("changes since last sync " .. date("%d %b %H:%M", last)) or "full compare")
+  ns.Log("%s is syncing with %s%s", ns.MyName(), probe.name, since and "" or " (full)")
   local b = {}
   for i = 0, SECTIONS - 1 do b[i + 1] = sections[i] end
   ns.syncPhase = "comparing - waiting for " .. probe.name
   ns.syncStep, ns.syncDone, ns.syncTotal = "comparing", nil, nil
   ns.Send(ns.ReplyTarget(probe), { t = "SUM", r = ns.RealmKey(), b = b }, "ALERT", nil, function()
-    ns.Log("%s sent its section sums to %s; waiting for the comparison", ns.MyName(), probe.name)
+    ns.Detail("%s sent its section sums to %s; waiting for the comparison", ns.MyName(), probe.name)
   end)
   UpdateProgress()
   local mine = join
@@ -916,7 +913,7 @@ function ns.CatchUp(verbose)
   if ns.state ~= "ready" then SetState("waiting") end
   ns.JoinChannel()
   local routes = ns.Broadcast(StateMsg("HELLO"), "ALERT", true)
-  ns.Log("looking for players with AuctionatorSync (%s)", routes ~= "" and routes or "no routes")
+  ns.Detail("looking for players with AuctionatorSync (%s)", routes ~= "" and routes or "no routes")
   if verbose then ns.Print("Syncing...") end
   C_Timer.After(HELLO_WAIT, function()
     if join then return end
@@ -930,9 +927,9 @@ function ns.CatchUp(verbose)
     end
     table.sort(answered)
     if #answered > 0 then
-      ns.Log("online: %s", table.concat(answered, ", "))
+      ns.Detail("online: %s", table.concat(answered, ", "))
     else
-      ns.Log("nobody else online with AuctionatorSync")
+      ns.Detail("nobody else online with AuctionatorSync")
     end
 
     local hosts = Hosts(ns.Master())
@@ -952,14 +949,14 @@ function ns.CatchUp(verbose)
       if ns.state == "ready" then
         Say(verbose, "Up to date (holding the master list).")
       else
-        ns.Log("%s starts the master list: %s, fingerprint %s", ns.MyName(), ns.Plural(itemCount, "price"), ns.Fingerprint())
+        ns.Log("%s starts the master list (%s)", ns.MyName(), ns.Plural(itemCount, "price"))
         Say(verbose, #answered > 0 and "Up to date." or "No one online with AuctionatorSync yet. These prices join the next sync.")
       end
       local rr = Realm()
       if rr then rr.lastCatchUp = ns.Now() end
       SetState("ready")
     else
-      ns.Log("%s is starting the master list; handshaking with them when they're ready", first.name)
+      ns.Detail("%s is starting the master list; handshaking with them when they're ready", first.name)
       C_Timer.After(HELLO_WAIT, function() if not join and ns.state ~= "ready" then ns.CatchUp(verbose) end end)
     end
   end)
@@ -982,17 +979,17 @@ local function NoteState(peer, msg, isHello)
     ns.Log("%s came online (v%s)", peer.name, tostring(peer.version))
   end
   if msg.st == "syncing" and was ~= "syncing" and msg.w then
-    ns.Log("%s is handshaking with %s", peer.name, msg.w)
+    ns.Log("%s is syncing with %s", peer.name, msg.w)
   end
   if peer.hl > 0 and peer.hl ~= wasHl then
-    ns.Log("%s is hosting %s", peer.name, ns.Plural(peer.hl, "handshake"))
+    ns.Detail("%s is hosting %s", peer.name, ns.Plural(peer.hl, "handshake"))
   end
   if msg.st == "ready" and (was ~= "ready" or wasD ~= msg.d) then
     local master = ns.Master()
     if master and msg.d == master then
-      ns.Log("%s is in sync (fingerprint %s)", peer.name, tostring(msg.d))
+      ns.Log("%s is in sync", peer.name)
     else
-      ns.Log("%s is ready, but their prices differ from the master list", peer.name)
+      ns.Detail("%s is ready, but their prices differ from the master list", peer.name)
     end
   end
 end
@@ -1051,7 +1048,7 @@ function ns.OnMessage(msg, peer)
     for i = 0, SECTIONS - 1 do
       if tonumber(type(msg.b) == "table" and msg.b[i + 1]) ~= sections[i] then diff[#diff + 1] = i end
     end
-    ns.Log("%s is comparing with %s: %d of %d sections differ", peer.name, ns.MyName(), #diff, SECTIONS)
+    ns.Detail("%s is comparing with %s: %d of %d sections differ", peer.name, ns.MyName(), #diff, SECTIONS)
     ns.Send(ns.ReplyTarget(peer), { t = "NEED", r = ns.RealmKey(), bk = diff }, "ALERT")
 
   elseif msg.t == "CANCEL" then
@@ -1076,11 +1073,11 @@ function ns.OnMessage(msg, peer)
     if join.timer then join.timer:Cancel(); join.timer = nil end
     local bk = type(msg.bk) == "table" and msg.bk or {}
     if #bk == 0 then
-      ns.Log("%s's prices already match %s's", ns.MyName(), peer.name)
+      ns.Detail("%s's prices already match %s's", ns.MyName(), peer.name)
       FinishJoin(join.verbose, 0, peer.name)
       return
     end
-    ns.Log("%s answered: %d of %d sections differ", peer.name, #bk, SECTIONS)
+    ns.Detail("%s answered: %d of %d sections differ", peer.name, #bk, SECTIONS)
     StartPieces(bk)
 
   elseif msg.t == "DATA" then
@@ -1098,7 +1095,7 @@ function ns.OnMessage(msg, peer)
         for _, s in ipairs(type(msg.bk) == "table" and msg.bk or {}) do set[tonumber(s)] = true end
         tr.sections, tr.pc, tr.since = set, msg.pc, tonumber(msg.sn)
         hosting[tkey] = true
-        ns.Log("%s is handshaking with %s (%d sections)", peer.name, ns.MyName(),
+        ns.Detail("%s is handshaking with %s (%d sections)", peer.name, ns.MyName(),
           type(msg.bk) == "table" and #msg.bk or 0)
         ns.AnnounceState()
       end
@@ -1127,7 +1124,7 @@ function ns.OnMessage(msg, peer)
     end
     local tot = tonumber(msg.tot)
     if tot and tot > BATCH then
-      ns.Log("%s <- %s: %s / %s (%s, %d%%)", ns.MyName(), peer.name, ns.Num(tr.received),
+      ns.Detail("%s <- %s: %s / %s (%s, %d%%)", ns.MyName(), peer.name, ns.Num(tr.received),
         ns.Plural(tot, "price"), KIND_WORDS[tr.kind] or "scan prices", floor(tr.received / tot * 100))
     end
     if tr.timer then tr.timer:Cancel() end
@@ -1143,10 +1140,10 @@ function ns.OnMessage(msg, peer)
 
     if tr.kind == "join" then
       -- Hosting a piece: merge done. Send back what differs, share what they brought.
-      ns.Log("%s received %s from %s; %s newer than %s's", ns.MyName(), ns.Plural(tr.received, "price"),
+      ns.Detail("%s received %s from %s; %s newer than %s's", ns.MyName(), ns.Plural(tr.received, "price"),
         peer.name, ns.Num(tr.changed), ns.MyName())
       if tr.changed > 0 then
-        ns.Log("new master list generated: %s, fingerprint %s", ns.Plural(itemCount, "price"), ns.Fingerprint())
+        ns.Detail("new master list generated: %s, fingerprint %s", ns.Plural(itemCount, "price"), ns.Fingerprint())
       end
       local reply = {}
       for _, it in ipairs(ItemsIn(tr.sections)) do
@@ -1157,7 +1154,7 @@ function ns.OnMessage(msg, peer)
           reply[#reply + 1] = it
         end
       end
-      ns.Log("%s sends %s the master list for those sections: %s", ns.MyName(), peer.name, ns.Plural(#reply, "price"))
+      ns.Detail("%s sends %s the master list for those sections: %s", ns.MyName(), peer.name, ns.Plural(#reply, "price"))
       replies[peerKey .. "#" .. tostring(tr.pc)] = ns.SendEntries(ns.ReplyTarget(peer), reply, "BULK", "reply", { pc = tr.pc, tot = #reply })
       if #tr.brought > 0 then
         local others = 0
@@ -1165,7 +1162,7 @@ function ns.OnMessage(msg, peer)
           if short ~= peerKey and ns.IsPeerOnline(p) and Compatible(p) then others = others + 1 end
         end
         if others > 0 then
-          ns.Log("master list ready: sharing the %s from %s with %s", ns.Plural(#tr.brought, "new price"),
+          ns.Detail("master list ready: sharing the %s from %s with %s", ns.Plural(#tr.brought, "new price"),
             peer.name, ns.Plural(others, "other player"))
           ns.SendEntries(nil, tr.brought, "NORMAL", "fwd")
         end
@@ -1180,7 +1177,7 @@ function ns.OnMessage(msg, peer)
         piece.done = true
         if piece.timer then piece.timer:Cancel() end
         join.changed = join.changed + tr.changed
-        ns.Log("%s received %s from %s (%d sections), %s changed", ns.MyName(), ns.Plural(tr.received, "price"),
+        ns.Detail("%s received %s from %s (%d sections), %s changed", ns.MyName(), ns.Plural(tr.received, "price"),
           peer.name, #piece.list, ns.Num(tr.changed))
         UpdateProgress()
         local all, names = true, {}
@@ -1200,7 +1197,7 @@ function ns.OnMessage(msg, peer)
       end
 
     elseif tr.kind == "fwd" then
-      ns.Log("%s shared a newcomer's prices: %s, %s changed", peer.name, ns.Plural(tr.received, "price"), ns.Num(tr.changed))
+      ns.Detail("%s shared a newcomer's prices: %s, %s changed", peer.name, ns.Plural(tr.received, "price"), ns.Num(tr.changed))
       MarkSynced()
       Report(tr.changed)
       ns.AnnounceState()
