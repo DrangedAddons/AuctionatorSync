@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.20.1
+- New icon: the gold coin stack (game icon inv_misc_coin_02), upscaled to 64x64 and sharpened, the same way as CraftRoute's. Used for the addon list, the minimap button, the options page and the DrangedAddons manager (icon.ico: 64/48/32/16 px).
+
 ## 0.20.0
 - **The log and the Sync Monitor are one window.** The log sits at the bottom of the Sync Monitor and moves down as the monitor rows above it grow. Drag the corner grip to make the log taller or shorter (remembered).
 - The **Log** button is gone from `/async`; **Monitor** opens the combined window. Ticking **Verbose mode**, `/async log` and `/async monitor` all open it too.
