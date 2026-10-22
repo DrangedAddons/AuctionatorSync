@@ -19,9 +19,11 @@ ROOT = os.path.dirname(HERE)
 def main(src):
     im = Image.open(src).convert("RGB")
     big = im.resize((64, 64), Image.LANCZOS)
-    big = big.filter(ImageFilter.UnsharpMask(radius=1.0, percent=60, threshold=2))
+    # RGBA throughout: the .ico header says 32-bit, and WPF (the manager) refuses 24-bit PNG
+    # entries inside a 32-bit icon
+    big = big.filter(ImageFilter.UnsharpMask(radius=1.0, percent=60, threshold=2)).convert("RGBA")
     os.makedirs(os.path.join(ROOT, "Images"), exist_ok=True)
-    big.convert("RGBA").save(os.path.join(ROOT, "Images", "Icon.tga"))
+    big.save(os.path.join(ROOT, "Images", "Icon.tga"))
     big.save(os.path.join(ROOT, "icon.ico"), sizes=[(64, 64), (48, 48), (32, 32), (16, 16)])
     print("ok", im.size, "->", big.size)
 

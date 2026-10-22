@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.20.2
+- Fixed: the DrangedAddons manager showed a blank "A" instead of the icon. icon.ico held 24-bit images inside a 32-bit icon, which the manager can't read; it's now saved with transparency (32-bit) throughout, like CraftRoute's.
+
 ## 0.20.1
 - New icon: the gold coin stack (game icon inv_misc_coin_02), upscaled to 64x64 and sharpened, the same way as CraftRoute's. Used for the addon list, the minimap button, the options page and the DrangedAddons manager (icon.ico: 64/48/32/16 px).
 
