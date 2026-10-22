@@ -1,61 +1,45 @@
--- Verbose mode's log window: what AuctionatorSync is doing and has done (/async log, or the
--- Verbose mode box in /async). Lines come from ns.Log; the last few hundred are kept across
--- /reload. Only you see it.
+-- The log: the bottom part of the Sync Monitor window (Monitor.lua builds the window and places
+-- this under the monitor rows, moving it down as they grow). Lines come from ns.Log while Verbose
+-- mode is on; the last few hundred are kept across /reload. Only you see it.
 local _, ns = ...
 
-local win
+local section
+local LOG_MIN, LOG_MAX, LOG_DEFAULT = 100, 600, 220
 
-local function Build()
-  win = CreateFrame("Frame", "AuctionatorSyncLogFrame", UIParent, "BackdropTemplate")
-  win:SetSize(560, 320)
-  win:SetPoint("CENTER", 0, -120)
-  win:SetFrameStrata("DIALOG")
-  win:SetMovable(true)
-  win:SetResizable(true)
-  if win.SetResizeBounds then win:SetResizeBounds(360, 160) end
-  win:EnableMouse(true)
-  win:RegisterForDrag("LeftButton")
-  win:SetScript("OnDragStart", ns.DragStart) -- moves its docked group; Alt-drag undocks it
-  win:SetScript("OnDragStop", ns.DragStop)
-  win:SetBackdrop({
-    bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1,
-  })
-  win:SetBackdropColor(0.04, 0.04, 0.06, 0.95)
-  win:SetBackdropBorderColor(0.3, 0.3, 0.35, 1)
-  table.insert(UISpecialFrames, "AuctionatorSyncLogFrame")
+function ns.LogHeight()
+  return math.max(LOG_MIN, math.min(LOG_MAX, (ns.db and ns.db.logHeight) or LOG_DEFAULT))
+end
 
-  local title = win:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  title:SetPoint("TOPLEFT", 12, -10)
-  title:SetText("AuctionatorSync log")
+-- win: the monitor window; relayout: called when the log's height changes (grip drag)
+function ns.BuildLogSection(win, relayout)
+  section = CreateFrame("Frame", nil, win)
+  section:SetHeight(ns.LogHeight())
 
-  win.state = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  win.state:SetPoint("LEFT", title, "RIGHT", 10, 0)
+  local divider = section:CreateTexture(nil, "ARTWORK")
+  divider:SetPoint("TOPLEFT", 4, 0)
+  divider:SetPoint("TOPRIGHT", -4, 0)
+  divider:SetHeight(1)
+  divider:SetColorTexture(1, 0.82, 0, 0.35)
 
-  local close = CreateFrame("Button", nil, win, "UIPanelCloseButton")
-  close:SetPoint("TOPRIGHT", 2, 2)
+  local title = section:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  title:SetPoint("TOPLEFT", 12, -8)
+  title:SetText("Log")
 
-  local clear = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
+  section.state = section:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  section.state:SetPoint("LEFT", title, "RIGHT", 10, 0)
+
+  local clear = CreateFrame("Button", nil, section, "UIPanelButtonTemplate")
   clear:SetSize(70, 20)
-  clear:SetPoint("RIGHT", close, "LEFT", -4, 0)
-
-  -- the Sync Monitor, docked to this log when the settings window isn't open
-  local monitor = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
-  monitor:SetSize(100, 20)
-  monitor:SetPoint("RIGHT", clear, "LEFT", -4, 0)
-  monitor:SetText("Sync Monitor")
-  monitor:SetScript("OnClick", function()
-    local settingsOpen = AuctionatorSyncFrame and AuctionatorSyncFrame:IsShown()
-    ns.ToggleMonitor(not settingsOpen and win or nil)
-  end)
+  clear:SetPoint("TOPRIGHT", -10, -4)
   clear:SetText("Clear")
   clear:SetScript("OnClick", function()
     wipe(ns.store.log)
-    win.lines:Clear()
+    section.lines:Clear()
   end)
 
-  local lines = CreateFrame("ScrollingMessageFrame", nil, win)
-  lines:SetPoint("TOPLEFT", 12, -34)
-  lines:SetPoint("BOTTOMRIGHT", -12, 12)
+  local lines = CreateFrame("ScrollingMessageFrame", nil, section)
+  lines:SetPoint("TOPLEFT", 12, -30)
+  lines:SetPoint("BOTTOMRIGHT", -12, 14)
   lines:SetFontObject(GameFontHighlightSmall)
   lines:SetJustifyH("LEFT")
   lines:SetFading(false)
@@ -71,43 +55,50 @@ local function Build()
       self:ScrollDown()
     end
   end)
-  win.lines = lines
+  section.lines = lines
 
-  -- drag the bottom-right corner to resize
-  local grip = CreateFrame("Button", nil, win)
+  -- bottom-right grip: drag to make the log taller or shorter (remembered)
+  local grip = CreateFrame("Button", nil, section)
   grip:SetSize(14, 14)
   grip:SetPoint("BOTTOMRIGHT", -2, 2)
   grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
   grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
-  grip:SetScript("OnMouseDown", function() win:StartSizing("BOTTOMRIGHT") end)
-  grip:SetScript("OnMouseUp", function() win:StopMovingOrSizing() end)
-
-  win:SetScript("OnShow", function()
-    win.state:SetText(ns.db.verbose and "|cff33ff99recording|r"
-      or "|cffff9966not recording (Verbose mode is off)|r")
-    lines:Clear()
-    for _, line in ipairs(ns.store.log) do lines:AddMessage(line) end
-    lines:ScrollToBottom()
+  local function CursorY()
+    local _, y = GetCursorPosition()
+    return y / UIParent:GetEffectiveScale()
+  end
+  grip:SetScript("OnMouseDown", function(self)
+    self.startY, self.startH = CursorY(), ns.LogHeight()
+    self:SetScript("OnUpdate", function(g)
+      local h = math.max(LOG_MIN, math.min(LOG_MAX, g.startH + (g.startY - CursorY())))
+      if h ~= ns.db.logHeight then
+        ns.db.logHeight = h
+        section:SetHeight(h)
+        relayout()
+      end
+    end)
   end)
-  win:Hide()
+  grip:SetScript("OnMouseUp", function(self) self:SetScript("OnUpdate", nil) end)
+
+  return section
 end
 
-function ns.OnLogLine(line)
-  if win and win:IsShown() then win.lines:AddMessage(line) end
-end
-
-function ns.ShowLog(show)
-  if not win then Build() end
-  if show then
-    -- dock beside whichever AuctionatorSync windows are open, without overlapping
-    if not win:IsShown() then ns.PlaceWindow(win) end
-    if win:IsShown() then win:GetScript("OnShow")() else win:Show() end
-  else
-    win:Hide()
+-- Reload the lines from the saved log (when the window opens) and update the recording note.
+function ns.RefreshLogSection(reload)
+  if not section then return end
+  section.state:SetText(ns.db.verbose and "|cff33ff99recording|r"
+    or "|cffff9966not recording (Verbose mode is off)|r")
+  if reload then
+    section.lines:Clear()
+    for _, line in ipairs(ns.store.log) do section.lines:AddMessage(line) end
+    section.lines:ScrollToBottom()
   end
 end
 
-function ns.ToggleLog()
-  if not win then Build() end
-  ns.ShowLog(not win:IsShown())
+function ns.OnLogLine(line)
+  if section and section:IsVisible() then section.lines:AddMessage(line) end
 end
+
+-- The log lives in the Sync Monitor now.
+function ns.ShowLog(show) ns.ShowMonitor(show) end
+function ns.ToggleLog() ns.ToggleMonitor() end

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.20.0
+- **The log and the Sync Monitor are one window.** The log sits at the bottom of the Sync Monitor and moves down as the monitor rows above it grow. Drag the corner grip to make the log taller or shorter (remembered).
+- The **Log** button is gone from `/async`; **Monitor** opens the combined window. Ticking **Verbose mode**, `/async log` and `/async monitor` all open it too.
+- The window no longer docks itself to other windows. It opens where it was, and only moves (to a free spot beside, unattached) if that would put it on top of another AuctionatorSync window.
+
 ## 0.19.3
 - The Price List remembers where you put it, across /reload, relogs and updates. Once moved, it always reopens there (other windows still dock beside it). Until you've moved it, it opens docked as before.
 

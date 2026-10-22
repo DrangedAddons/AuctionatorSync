@@ -13,6 +13,6 @@ Requires [Auctionator](https://www.curseforge.com/wow/addons/auctionator).
 - `/async` - settings
 - `/async sync` - sync now
 - `/async status` - sync status in chat
-- `/async log` - sync log
+- `/async monitor` - Sync Monitor and log
 
 Also available from the minimap button, a key binding (Keybindings > AddOns > AuctionatorSync) and Options > AddOns > AuctionatorSync.

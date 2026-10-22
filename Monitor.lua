@@ -1,4 +1,5 @@
--- Sync Monitor: a torrent-client style view of who is syncing right now. Opens with the log.
+-- Sync Monitor: a torrent-client style view of who is syncing right now, with the log underneath
+-- (Log.lua builds that part; it moves down as the rows above it grow).
 --   top:    the master list (short fingerprint, prices, newest price) and how many are online
 --   rows:   only players doing something right now - handshaking (with how many hosts, toward
 --           which master list), receiving updates, sharing a scan, hosting others - with a
@@ -195,7 +196,14 @@ local function Refresh()
   win.footer:ClearAllPoints()
   win.footer:SetPoint("TOPLEFT", 12, y)
   win.footer:SetPoint("RIGHT", win, "RIGHT", -12, 0)
-  win:SetHeight(-y + win.footer:GetStringHeight() + 14)
+  y = y - win.footer:GetStringHeight() - 10
+
+  -- the log, right under it
+  win.log:ClearAllPoints()
+  win.log:SetPoint("TOPLEFT", win, "TOPLEFT", 0, y)
+  win.log:SetPoint("RIGHT", win, "RIGHT")
+  win:SetHeight(-y + ns.LogHeight())
+  ns.RefreshLogSection(false)
 end
 
 local function Build()
@@ -291,17 +299,23 @@ local function Build()
   win.footer:SetJustifyH("LEFT")
   win.footer:SetSpacing(2)
 
-  win:SetScript("OnShow", Refresh)
+  win.log = ns.BuildLogSection(win, function() Refresh() end)
+
+  win:SetScript("OnShow", function()
+    ns.RefreshLogSection(true)
+    Refresh()
+  end)
   C_Timer.NewTicker(1, Refresh)
   win:Hide()
 end
 
--- from: the window whose button opened it (docks against that one first, e.g. the log).
-function ns.ShowMonitor(show, from)
+function ns.ShowMonitor(show)
   if not win then Build() end
   if show then
     if not win:IsShown() then
-      ns.PlaceWindow(win, from)
+      -- stays where it was, unless that's on top of another open window: then it moves to a free
+      -- spot beside it (not attached)
+      ns.PlaceWindow(win, nil, true)
       win:Show()
     end
     Refresh()
@@ -310,7 +324,7 @@ function ns.ShowMonitor(show, from)
   end
 end
 
-function ns.ToggleMonitor(from)
+function ns.ToggleMonitor()
   if not win then Build() end
-  ns.ShowMonitor(not win:IsShown(), from)
+  ns.ShowMonitor(not win:IsShown())
 end

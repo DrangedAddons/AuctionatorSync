@@ -143,11 +143,11 @@ local function AttachedTo(frame, target)
   end
   return false
 end
-local WINDOWS = { "AuctionatorSyncFrame", "AuctionatorSyncPriceListFrame", "AuctionatorSyncLogFrame",
-  "AuctionatorSyncMonitorFrame" }
+local WINDOWS = { "AuctionatorSyncFrame", "AuctionatorSyncPriceListFrame", "AuctionatorSyncMonitorFrame" }
 
--- prefer: a window to dock against first, if it's open (e.g. the monitor opened from the log).
-function ns.PlaceWindow(win, prefer)
+-- prefer: a window to dock against first, if it's open.
+-- free: don't attach, and don't move it at all unless where it is now overlaps an open window.
+function ns.PlaceWindow(win, prefer, free)
   local others = {}
   if prefer and prefer ~= win and prefer:IsShown() and prefer:GetLeft() then others[1] = prefer end
   for _, name in ipairs(WINDOWS) do
@@ -166,6 +166,7 @@ function ns.PlaceWindow(win, prefer)
     end
     return true
   end
+  if free and win:GetLeft() and Fits(win:GetLeft(), win:GetTop()) then return end
   for _, o in ipairs(others) do
     if not AttachedTo(o, win) then
       for _, spot in ipairs({
@@ -176,7 +177,11 @@ function ns.PlaceWindow(win, prefer)
       }) do
         if Fits(spot[1], spot[2]) then
           win:ClearAllPoints()
-          win:SetPoint(spot[3], o, spot[4], 0, 0) -- attached: follows o when o is dragged
+          if free then
+            win:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", spot[1], spot[2])
+          else
+            win:SetPoint(spot[3], o, spot[4], 0, 0) -- attached: follows o when o is dragged
+          end
           return
         end
       end

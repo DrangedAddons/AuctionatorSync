@@ -15,8 +15,11 @@ local OPTIONS = {
     get = function() return not ns.db.minimap.hide end,
     onClick = function(on) ns.SetMinimapShown(on) end },
   { key = "verbose", label = "Verbose mode",
-    tip = "Records every step (who answered, the host, what was sent and received, what changed) in a log window. Only you see it. Also /async log.",
-    onClick = function(on) ns.ShowLog(on) end },
+    tip = "Records sync activity in the log at the bottom of the Sync Monitor (who came online, who is syncing with whom, scans shared, problems). Only you see it.",
+    onClick = function(on)
+      if on then ns.ShowMonitor(true) end
+      if ns.RefreshLogSection then ns.RefreshLogSection(false) end
+    end },
 }
 
 local function Ago(ts)
@@ -491,21 +494,16 @@ local function Build()
   sync:SetText("Sync now")
   sync:SetScript("OnClick", function() ns.CatchUp(true) end)
 
-  local logButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  logButton:SetSize(44, 24)
-  logButton:SetPoint("TOPRIGHT", -16, y - 8)
-  logButton:SetText("Log")
-  logButton:SetScript("OnClick", function() ns.ToggleLog() end)
+  -- the Sync Monitor (with the log in it)
+  local monitorButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+  monitorButton:SetSize(70, 24)
+  monitorButton:SetPoint("TOPRIGHT", -16, y - 8)
+  monitorButton:SetText("Monitor")
+  monitorButton:SetScript("OnClick", function() ns.ToggleMonitor() end)
 
   local priceButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  priceButton:SetSize(76, 24)
-  priceButton:SetPoint("RIGHT", logButton, "LEFT", -72, 0) -- room for Monitor in between
-
-  local monitorButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  monitorButton:SetSize(64, 24)
-  monitorButton:SetPoint("RIGHT", logButton, "LEFT", -4, 0)
-  monitorButton:SetText("Monitor")
-  monitorButton:SetScript("OnClick", function() ns.ToggleMonitor(frame) end)
+  priceButton:SetSize(80, 24)
+  priceButton:SetPoint("RIGHT", monitorButton, "LEFT", -4, 0)
   priceButton:SetText("Price List")
   priceButton:SetScript("OnClick", function() ns.TogglePriceList() end)
 
