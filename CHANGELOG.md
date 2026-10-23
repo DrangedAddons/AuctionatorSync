@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.0
+- First live release for WoW Forever. The addon is now listed for Forever only (the Classic beta has ended). No changes in game.
+
 ## 0.20.2
 - Fixed: the DrangedAddons manager showed a blank "A" instead of the icon. icon.ico held 24-bit images inside a 32-bit icon, which the manager can't read; it's now saved with transparency (32-bit) throughout, like CraftRoute's.
 
