@@ -29,7 +29,7 @@ jobs:
       - name: Build zip
         run: |
           mkdir -p build/AuctionatorSync
-          rsync -a --exclude='.git*' --exclude='.github' --exclude='build' --exclude='tools' ./ build/AuctionatorSync/
+          rsync -a --exclude='.git*' --exclude='.github' --exclude='build' --exclude='screenshots' --exclude='tools' ./ build/AuctionatorSync/
           cd build && zip -qr "../AuctionatorSync-${GITHUB_REF_NAME}.zip" AuctionatorSync
 
       # Every CHANGELOG section since the previous release, so versions that were never tagged on
