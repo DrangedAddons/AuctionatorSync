@@ -42,6 +42,7 @@ local SINCE_MARGIN = 600    -- a quick handshake re-sends prices from a little b
 local COMPARE_TIMEOUT = 45  -- the compare step is two small messages: no answer by then, try another host
 local STALL_TIMEOUT = 60    -- a handshake piece with no prices moving either way for this long is dropped
 local BENCH_TIME = 600      -- a host dropped for that is not picked again for this long (10 minutes)
+local WAIT_LIMIT = 60       -- looking for a host longer than this: carry on alone and retry later
 local SECTIONS = 256
 local TS_KEEP_DAYS = 60
 local TWO32 = 4294967296
@@ -174,11 +175,13 @@ end
 -- What each item's price was before Auctionator's SetPrice overwrote it (the hook runs after).
 local known = {}
 local hookedDB
+local hookFailed -- logged once
 local pending = {} -- key -> price before your latest scan/search changed it (to share)
 
 local function OnLocalPrice(key, price, available)
+  price = tonumber(price)
   local r = Realm()
-  if not r or not key or not price then return end
+  if not r or key == nil or not price then return end
   key = tostring(key)
   r.ts[key] = ns.Now()
   newestTs = math.max(newestTs, r.ts[key])
@@ -207,8 +210,15 @@ function ns.HookAuctionator()
   if r then
     for _, ts in pairs(r.ts) do if ts > newestTs then newestTs = ts end end
   end
+  -- Auctionator calls SetPrice from its scan-processing ticker without a pcall: an error here
+  -- would make that ticker fail on the same item every frame and the scan never finishes.
   hooksecurefunc(db, "SetPrice", function(self, key, price, available)
-    if self == hookedDB then OnLocalPrice(key, price, available) end
+    if self ~= hookedDB then return end
+    local ok, err = pcall(OnLocalPrice, key, price, available)
+    if not ok and not hookFailed then
+      hookFailed = true
+      ns.Log("couldn't record a price from Auctionator: %s", tostring(err))
+    end
   end)
   ns.Detail("watching Auctionator's prices for %s: %s, fingerprint %s",
     tostring(ns.RealmKey()), ns.Plural(itemCount, "price"), ns.Fingerprint())
@@ -470,6 +480,7 @@ function ns.AnnounceState(progressOnly)
 end
 
 local function SetState(st, with)
+  if st ~= ns.state then ns.stateSince = ns.Now() end
   ns.state, ns.syncingWith = st, with
   if st ~= "syncing" then ns.syncProgress = nil end
   ns.AnnounceState()
@@ -762,14 +773,18 @@ local function FinishJoin(verbose, changed, via)
   end
 end
 
+local RetrySoon -- forward declaration (needs StartHandshake)
+
 local function GiveUp()
   local verbose = join and join.verbose
-  ns.Log("%s couldn't finish syncing: no in-sync host answered; trying again later", ns.MyName())
+  ns.Log("%s couldn't finish syncing: no in-sync host answered; trying again shortly", ns.MyName())
   Say(verbose, "Couldn't finish syncing; it'll try again shortly.")
   FinishJoin(verbose, join and join.changed, nil)
+  RetrySoon()
 end
 
 local SendPiece -- forward declaration (pieces re-send themselves on reassignment)
+local CompareTimedOut -- forward declaration (StartHandshake arms it, the watchdog backs it up)
 
 -- Drop a stalled piece: tell that host to stop, stop our upload to it, bench it, and give the
 -- piece to another in-sync host. No host left: stop the handshake cleanly and retry later.
@@ -863,7 +878,7 @@ local function StartHandshake(verbose, probe, full)
   local last = r and r.lastCatchUp or 0
   local since = (not full and last > 0) and (last - SINCE_MARGIN) or nil
   join = { verbose = verbose, probe = probe, pieces = {}, bad = {}, changed = 0, nextId = 0, target = ns.Master(),
-    since = since, full = full }
+    since = since, full = full, started = ns.Now() }
   SetState("syncing", probe.name)
   ns.syncProgress = 0
   ns.Log("%s is syncing with %s%s", ns.MyName(), probe.name, since and "" or " (full)")
@@ -876,18 +891,43 @@ local function StartHandshake(verbose, probe, full)
   end)
   UpdateProgress()
   local mine = join
-  join.timer = C_Timer.NewTimer(COMPARE_TIMEOUT, function()
-    if join ~= mine or next(mine.pieces) then return end
-    mine.bad[probe] = true
-    Bench(probe, string.format("no answer to the compare in %ds", COMPARE_TIMEOUT))
-    local hosts = Hosts(ns.Master(), mine.bad)
+  join.timer = C_Timer.NewTimer(COMPARE_TIMEOUT, function() CompareTimedOut(mine) end)
+end
+
+-- The probe never answered our section sums: bench it and compare with another host.
+CompareTimedOut = function(mine)
+  if join ~= mine or next(mine.pieces) then return end
+  local probe = mine.probe
+  if mine.timer then mine.timer:Cancel(); mine.timer = nil end
+  mine.bad[probe] = true
+  Bench(probe, string.format("no answer to the compare in %ds", COMPARE_TIMEOUT))
+  local hosts = Hosts(ns.Master(), mine.bad)
+  if hosts[1] then
+    ns.Log("%s didn't answer; comparing with %s instead", probe.name, hosts[1].name)
+    local bad = mine.bad
+    StartHandshake(mine.verbose, hosts[1], mine.full)
+    join.bad = bad
+  else
+    GiveUp()
+  end
+end
+
+-- After a failed attempt: try again in a little while with whichever host is free (benched
+-- ones sit out). Nobody left to try: stay ready on our own list; the self-repair catches up later.
+local RETRY_AFTER = 20
+local retryPending = false
+RetrySoon = function()
+  if retryPending then return end
+  retryPending = true
+  C_Timer.After(RETRY_AFTER, function()
+    retryPending = false
+    if join or ns.state ~= "ready" or ns.IsScanning() then return end
+    local master = ns.Master()
+    if not master or master == ns.Fingerprint() then return end
+    local hosts = Hosts(master)
     if hosts[1] then
-      ns.Log("%s didn't answer; comparing with %s instead", probe.name, hosts[1].name)
-      local bad = mine.bad
-      StartHandshake(verbose, hosts[1], mine.full)
-      join.bad = bad
-    else
-      GiveUp()
+      ns.Log("%s retries syncing with %s", ns.MyName(), hosts[1].name)
+      StartHandshake(false, hosts[1])
     end
   end)
 end
@@ -955,6 +995,11 @@ function ns.CatchUp(verbose)
       local rr = Realm()
       if rr then rr.lastCatchUp = ns.Now() end
       SetState("ready")
+    elseif first.st == "ready" or ns.Now() - (ns.stateSince or ns.Now()) >= WAIT_LIMIT then
+      -- they're ready but benched (or never got ready): don't wait on them forever
+      ns.Log("%s found no free host to sync with; carrying on and retrying shortly", ns.MyName())
+      SetState("ready")
+      RetrySoon()
     else
       ns.Detail("%s is starting the master list; handshaking with them when they're ready", first.name)
       C_Timer.After(HELLO_WAIT, function() if not join and ns.state ~= "ready" then ns.CatchUp(verbose) end end)
@@ -1216,15 +1261,43 @@ end
 
 local mismatchSince
 
--- Watchdog: every few seconds, drop any handshake piece whose prices stopped moving.
-C_Timer.NewTicker(5, function()
-  if not join then return end
+-- Watchdog: every few seconds, drop any handshake piece whose prices stopped moving, and make
+-- sure "waiting" and "handshaking" always end, even if a timer or message handler failed.
+local function Watchdog()
   local now = ns.Now()
-  for _, piece in pairs(join.pieces) do
-    if not piece.done and piece.lastProgress and now - piece.lastProgress > STALL_TIMEOUT then
-      KickPiece(piece, string.format("no progress for %ds", STALL_TIMEOUT))
-      if not join then return end
+  if not join then
+    if ns.state == "syncing" then
+      ns.Log("%s's handshake ended without finishing; retrying shortly", ns.MyName())
+      SetState("ready")
+      RetrySoon()
+    elseif ns.state == "waiting" and now - (ns.stateSince or now) >= WAIT_LIMIT + HELLO_WAIT * 2 then
+      ns.Log("%s found no host to sync with in %ds; carrying on and retrying shortly", ns.MyName(), WAIT_LIMIT)
+      SetState("ready")
+      RetrySoon()
     end
+    return
+  end
+  if not next(join.pieces) then
+    if now - (join.started or now) > COMPARE_TIMEOUT + 15 then CompareTimedOut(join) end
+    return
+  end
+  local all = true
+  for _, piece in pairs(join.pieces) do
+    if not piece.done then
+      all = false
+      if now - (piece.lastProgress or join.started or now) > STALL_TIMEOUT then
+        KickPiece(piece, string.format("no progress for %ds", STALL_TIMEOUT))
+        if not join then return end
+      end
+    end
+  end
+  if all then FinishJoin(join.verbose, join.changed, join.probe and join.probe.name) end
+end
+C_Timer.NewTicker(5, function()
+  local ok, err = pcall(Watchdog)
+  if not ok then
+    ns.Log("sync watchdog error: %s; restarting the sync", tostring(err))
+    if join then pcall(GiveUp) else SetState("ready") end
   end
 end)
 
@@ -1284,9 +1357,7 @@ local function ScanEnded(completed)
   end
 end
 
-local scanListener = { kinds = {} }
-function scanListener:ReceiveEvent(event)
-  local kind = self.kinds[event]
+local function OnScanEvent(kind)
   if kind == "start" then
     ns.Log("Auctionator scan started")
     scanning = true
@@ -1299,6 +1370,19 @@ function scanListener:ReceiveEvent(event)
     ns.Log("Auctionator scan failed")
     ScanEnded(false)
   end
+end
+
+-- Auctionator's EventBus calls its listeners in a plain loop and fires ScanComplete from the
+-- last step of the scan: an error (or a slow share) here would stop its own listeners and
+-- leave the scan stuck at 99%. So the work runs on the next frame, outside its call, guarded.
+local scanListener = { kinds = {} }
+function scanListener:ReceiveEvent(event)
+  local kind = self.kinds[event]
+  if not kind then return end
+  C_Timer.After(0, function()
+    local ok, err = pcall(OnScanEvent, kind)
+    if not ok then ns.Log("couldn't handle the Auctionator scan event: %s", tostring(err)) end
+  end)
 end
 
 local scanEventsRegistered = false

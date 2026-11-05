@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1
+- Fixed: an Auctionator scan could stop at 98-99%. Auctionator calls our price hook and our scan listener without error protection, so any error on our side stopped its last step. Both are now guarded, and the scan-complete work (sharing your prices) runs a frame later, outside Auctionator's own code.
+- Fixed: players could stay on "waiting to sync" or "handshaking" until they relogged. Looking for a host now gives up after 60 seconds (or at once if the only candidates are benched), carries on with the player's own prices and retries 20 seconds later. A failed handshake also retries after 20 seconds instead of waiting for the 2-minute self-repair. A watchdog now ends any handshake that lost its timer, and restarts the sync if its own check errors.
+- Fixed: a player with no name in the online list. Battle.net can report an empty character name; messages now carry the sender's name, and a Battle.net message from a player already known through the guild is matched to them by session.
+
 ## 1.0.0
 - First live release for WoW Forever. The addon is now listed for Forever only (the Classic beta has ended). No changes in game.
 

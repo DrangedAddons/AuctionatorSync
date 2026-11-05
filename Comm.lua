@@ -120,6 +120,7 @@ function ns.Send(target, msg, prio, id, onSent)
   msg.v = ns.VERSION
   msg.p = ns.PROTOCOL
   msg.sid = ns.SESSION
+  msg.n = UnitName("player") -- Battle.net doesn't always give the receiver our character name
   local text = ns.Encode(msg)
   if not text then return end
   local size = target.kind == "BN" and CHUNK_BNET or CHUNK_ADDON
@@ -254,12 +255,35 @@ C_Timer.NewTicker(60, function()
 end)
 
 local function Deliver(name, route, text, bnID)
-  if not name or ns.IsMe(name) then return end
-  local short = ns.ShortName(name)
-  local whole = Reassemble(short, text)
+  if name == "" then name = nil end
+  if name and ns.IsMe(name) then return end
+  local rkey = bnID and ("bn:" .. tostring(bnID)) or ns.ShortName(name)
+  if not rkey then return end
+  local whole = Reassemble(rkey, text)
   if not whole then return end
   local msg = ns.Decode(whole)
   if not msg or type(msg.t) ~= "string" or msg.sid == ns.SESSION then return end
+  -- Battle.net can report an empty character name: use the name the sender put in the
+  -- message, or the player we already know with that session / Battle.net account.
+  if bnID then
+    local bySid, byAccount
+    for _, p in pairs(ns.peers) do
+      if p.name and p.name ~= "" then
+        if msg.sid and p.sid == msg.sid then bySid = p end
+        if p.bnID == bnID then byAccount = p end
+      end
+    end
+    if bySid then
+      name = bySid.name -- same login we already know (maybe through the guild)
+    elseif not name and type(msg.n) == "string" and msg.n ~= "" then
+      name = msg.n
+    elseif not name and byAccount then
+      name = byAccount.name -- older version: no name in the message
+    end
+  end
+  if not name or ns.IsMe(name) then return end
+  ns.peers[""] = nil -- left by older versions that accepted a blank Battle.net name
+  local short = ns.ShortName(name)
   local peer = ns.peers[short]
   if not peer then
     peer = { name = name, routes = {} }
