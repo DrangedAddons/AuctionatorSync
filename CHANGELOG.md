@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.0
+- **Bigger online list in `/async`.** The price check item is gone, and the player table takes its place. The window is wider, so long statuses ("handshaking with ... - receiving 1,200 / 4,000") fit. The table shows up to 16 players, then scrolls (mouse wheel or the bar on the right), with "1-16 of 20" underneath.
+- **Search by name.** Type in the box next to "Online" to show only matching players; the matching part of each name is highlighted. Combines with the Version and Status filters ("Showing 3 of 12"). The x clears it.
+
 ## 1.0.1
 - Fixed: an Auctionator scan could stop at 98-99%. Auctionator calls our price hook and our scan listener without error protection, so any error on our side stopped its last step. Both are now guarded, and the scan-complete work (sharing your prices) runs a frame later, outside Auctionator's own code.
 - Fixed: players could stay on "waiting to sync" or "handshaking" until they relogged. Looking for a host now gives up after 60 seconds (or at once if the only candidates are benched), carries on with the player's own prices and retries 20 seconds later. A failed handshake also retries after 20 seconds instead of waiting for the 2-minute self-repair. A watchdog now ends any handshake that lost its timer, and restarts the sync if its own check errors.

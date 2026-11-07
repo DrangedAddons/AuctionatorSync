@@ -1,4 +1,4 @@
--- /async window: settings, Sync now, the price check item, and who's online with AuctionatorSync.
+-- /async window: settings, Sync now, and who's online with AuctionatorSync (searchable table).
 local _, ns = ...
 
 local frame
@@ -30,141 +30,6 @@ local function Ago(ts)
   return floor(s / 86400) .. "d ago"
 end
 
-local function Money(copper)
-  if not copper then return "?" end
-  if GetMoneyString then return GetMoneyString(copper, true) end
-  if C_CurrencyInfo and C_CurrencyInfo.GetCoinTextureString then
-    return C_CurrencyInfo.GetCoinTextureString(copper)
-  end
-  return tostring(copper) .. "c"
-end
-
-
-----------------------------------------------------------------------------------------------
--- Price check: the latest changed price, as an item button. Friends compare it to check
--- they're in sync; the tooltip also shows Auctionator's own price lines.
-
-local GetInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
-local GetIcon = (C_Item and C_Item.GetItemIconByID) or GetItemIcon
-local loading = {}
-
-local function RefreshPriceCheck()
-  local pc = frame.priceCheck
-  local c = ns.LastChange()
-  local id = c and ns.ItemIDFromKey(c.key)
-  pc.itemID = id
-  if not id then
-    pc.icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
-    pc.button:SetBackdropBorderColor(0.3, 0.3, 0.35, 1)
-    pc.name:SetText("|cff999999No price changes yet|r")
-    pc.price:SetText("")
-    pc.source:SetText("|cff999999Scan the auction house, or wait for a friend's update.|r")
-    return
-  end
-
-  local name, link, quality = GetInfo(id)
-  pc.link = link
-  pc.icon:SetTexture(GetIcon(id) or "Interface\\Icons\\INV_Misc_QuestionMark")
-  local r, g, b = 1, 1, 1
-  if quality and C_Item and C_Item.GetItemQualityColor then
-    r, g, b = C_Item.GetItemQualityColor(quality)
-  elseif quality and ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[quality] then
-    local q = ITEM_QUALITY_COLORS[quality]
-    r, g, b = q.r, q.g, q.b
-  end
-  pc.button:SetBackdropBorderColor(r, g, b, 1)
-  if name then
-    pc.name:SetText(name)
-    pc.name:SetTextColor(r, g, b)
-  else
-    pc.name:SetText("Item " .. id)
-    pc.name:SetTextColor(1, 1, 1)
-    -- not in the item cache yet: refresh once it loads
-    if Item and Item.CreateFromItemID and not loading[id] then
-      loading[id] = true
-      Item:CreateFromItemID(id):ContinueOnItemLoad(function()
-        loading[id] = nil
-        if frame:IsShown() then RefreshPriceCheck() end
-      end)
-    end
-  end
-
-  -- Auctionator's current price (it can only differ if something changed it since)
-  local db = Auctionator and Auctionator.Database and Auctionator.Database.db
-  local entry = type(db) == "table" and db[c.key]
-  local now = type(entry) == "table" and entry.m or c.price
-  local text = Money(now)
-  if c.was and c.was > 0 and c.was ~= now then
-    text = text .. "  |cff999999was " .. Money(c.was) .. "|r"
-  end
-  pc.price:SetText(text)
-  pc.source:SetText(string.format("|cff999999%s · %s|r", c.from and "From AuctionatorSync" or ("From " .. ns.MyName() .. "'s scan"), Ago(c.at)))
-end
-
-local function BuildPriceCheck(y)
-  local pc = {}
-  frame.priceCheck = pc
-
-  local header = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  header:SetPoint("TOPLEFT", 16, y)
-  header:SetText("Price check")
-
-  local why = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  why:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -3)
-  why:SetPoint("RIGHT", frame, "RIGHT", -16, 0)
-  why:SetJustifyH("LEFT")
-  why:SetTextColor(0.6, 0.6, 0.6)
-  why:SetText("The latest price change. The same price on another player means the lists match.")
-
-  local button = CreateFrame("Button", nil, frame, "BackdropTemplate")
-  button:SetSize(40, 40)
-  button:SetPoint("TOPLEFT", why, "BOTTOMLEFT", 0, -6)
-  button:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
-  button:RegisterForClicks("LeftButtonUp")
-  pc.button = button
-
-  pc.icon = button:CreateTexture(nil, "ARTWORK")
-  pc.icon:SetPoint("TOPLEFT", 1, -1)
-  pc.icon:SetPoint("BOTTOMRIGHT", -1, 1)
-  pc.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-
-  local highlight = button:CreateTexture(nil, "HIGHLIGHT")
-  highlight:SetAllPoints(pc.icon)
-  highlight:SetColorTexture(1, 1, 1, 0.15)
-
-  button:SetScript("OnEnter", function(self)
-    if not pc.itemID then return end
-    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-    if GameTooltip.SetItemByID then
-      GameTooltip:SetItemByID(pc.itemID)
-    else
-      GameTooltip:SetHyperlink("item:" .. pc.itemID)
-    end
-    GameTooltip:Show()
-  end)
-  button:SetScript("OnLeave", GameTooltip_Hide)
-  -- Shift-click links it in chat, like any item button.
-  button:SetScript("OnClick", function()
-    if pc.link and HandleModifiedItemClick then HandleModifiedItemClick(pc.link) end
-  end)
-
-  pc.name = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  pc.name:SetPoint("TOPLEFT", button, "TOPRIGHT", 8, -1)
-  pc.name:SetPoint("RIGHT", frame, "RIGHT", -16, 0)
-  pc.name:SetJustifyH("LEFT")
-  pc.name:SetWordWrap(false)
-
-  pc.price = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-  pc.price:SetPoint("TOPLEFT", pc.name, "BOTTOMLEFT", 0, -2)
-  pc.price:SetJustifyH("LEFT")
-
-  pc.source = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  pc.source:SetPoint("TOPLEFT", pc.price, "BOTTOMLEFT", 0, -2)
-  pc.source:SetJustifyH("LEFT")
-
-  return button
-end
-
 ----------------------------------------------------------------------------------------------
 -- Online list: a table of everyone online with AuctionatorSync (this character included):
 -- Player | Version | Status. Anyone hosting a handshake right now (any in-sync player can) is
@@ -176,8 +41,11 @@ end
 --   needs update      an older AuctionatorSync that can't sync with this one
 
 local ROW_H = 18
+local VISIBLE_MAX = 16 -- rows shown before the table scrolls
+local FRAME_W = 480
 -- x offsets of the columns (Player starts at 20, after the host crown)
-local COL_VERSION, COL_STATUS, COL_LAST = 150, 226, 330
+local COL_VERSION, COL_STATUS, COL_LAST = 170, 232, 374
+local SCROLL_W = 10
 
 -- Click a heading for its menu: the sort choices, and (Version, Status) the filters. The host
 -- always stays at the top. desc = reverse of the column's natural order.
@@ -267,7 +135,7 @@ local function TableRow(i)
   row = CreateFrame("Frame", nil, t)
   row:SetHeight(ROW_H)
   row:SetPoint("TOPLEFT", t.head, "BOTTOMLEFT", 0, -2 - (i - 1) * ROW_H)
-  row:SetPoint("RIGHT", t, "RIGHT")
+  row:SetPoint("RIGHT", t, "RIGHT", -SCROLL_W - 4, 0)
   row.stripe = row:CreateTexture(nil, "BACKGROUND")
   row.stripe:SetAllPoints()
   row.stripe:SetColorTexture(1, 1, 1, i % 2 == 0 and 0.05 or 0)
@@ -319,7 +187,7 @@ local function RefreshOnline()
   for _, row in ipairs(all) do
     if row.rank == 1 then inSync = inSync + 1 end
   end
-  frame.onlineHeader.text:SetText(string.format("%s Online with AuctionatorSync (%d) |cff999999- %d in sync|r",
+  frame.onlineHeader.text:SetText(string.format("%s Online (%d) |cff999999- %d in sync|r",
     expanded and "|cffffd100-|r" or "|cffffd100+|r", #all, inSync))
 
   -- "Old" = older than the newest version anyone online runs
@@ -344,6 +212,7 @@ local function RefreshOnline()
     end
   end
 
+  local query = expanded and (frame.searchText or ""):lower() or "" -- the box is hidden when folded
   local rows = {}
   for _, row in ipairs(all) do
     local keep = true
@@ -351,8 +220,10 @@ local function RefreshOnline()
       local o = ActiveOption(spec)
       if o.test and not o.test(row) then keep = false end
     end
+    if keep and query ~= "" and not row.name:lower():find(query, 1, true) then keep = false end
     if keep then rows[#rows + 1] = row end
   end
+  frame.search:SetShown(expanded)
   frame.onlineAll = all
   SortRows(rows)
   local t = frame.onlineTable
@@ -376,11 +247,21 @@ local function RefreshOnline()
   if expanded then
     t:Show()
     frame.peers:Hide()
-    for i, data in ipairs(rows) do
+    local total = #rows
+    local visible = math.min(total, VISIBLE_MAX)
+    local maxOffset = math.max(0, total - VISIBLE_MAX)
+    t.offset = math.min(t.offset or 0, maxOffset)
+    for i = 1, visible do
+      local data = rows[i + t.offset]
       local row = TableRow(i)
       row.data = data
       row.crown:SetShown(data.host and true or false)
-      row.name:SetText(data.name)
+      local name = data.name
+      if query ~= "" then -- the matching part in gold
+        local s, e = name:lower():find(query, 1, true)
+        if s then name = name:sub(1, s - 1) .. "|cffffd100" .. name:sub(s, e) .. "|r" .. name:sub(e + 1) end
+      end
+      row.name:SetText(name)
       row.version:SetText("|cff" .. (data.versionColor or "999999") .. "v" .. tostring(data.version) .. "|r")
       row.status:SetText("|cff" .. data.color .. data.text .. "|r")
       if data.lastSync then
@@ -391,9 +272,34 @@ local function RefreshOnline()
       end
       row:Show()
     end
-    for i = #rows + 1, #t.rows do t.rows[i]:Hide() end
-    t.empty:SetShown(#rows == 0)
-    t:SetHeight(t.head:GetHeight() + 4 + math.max(#rows, 1) * ROW_H)
+    for i = visible + 1, #t.rows do t.rows[i]:Hide() end
+    t.empty:SetText(query ~= "" and string.format('No one online matches "%s".', frame.searchText)
+      or "Nobody matches this filter.")
+    t.empty:SetShown(total == 0)
+
+    -- scroll bar, only when there are more rows than fit
+    local scroll = t.scroll
+    scroll:SetShown(maxOffset > 0)
+    if maxOffset > 0 then
+      scroll:SetHeight(visible * ROW_H)
+      scroll.ignore = true
+      scroll:SetMinMaxValues(0, maxOffset)
+      scroll:SetValue(t.offset)
+      scroll.ignore = false
+      scroll:GetThumbTexture():SetHeight(math.max(16, visible * ROW_H * visible / total))
+    end
+
+    -- footer: how many are shown, when that isn't everyone
+    local footer
+    if maxOffset > 0 then
+      footer = string.format("%d-%d of %d", t.offset + 1, t.offset + visible, total)
+      if total < #all then footer = footer .. string.format(" (%d online)", #all) end
+    elseif total < #all and total > 0 then
+      footer = string.format("Showing %d of %d", total, #all)
+    end
+    t.footer:SetText(footer and ("|cff999999" .. footer .. "|r") or "")
+    t.footer:SetShown(footer ~= nil)
+    t:SetHeight(t.head:GetHeight() + 4 + math.max(visible, 1) * ROW_H + (footer and 16 or 0))
     bottom = t
   else
     t:Hide()
@@ -426,7 +332,6 @@ local function Refresh()
     cb:SetChecked((cb.get and cb.get()) or (not cb.get and ns.db[cb.key]) and true or false)
   end
 
-  RefreshPriceCheck()
   RefreshOnline()
 
   local last = ns.LastSync and ns.LastSync() or 0
@@ -435,7 +340,7 @@ end
 
 local function Build()
   frame = CreateFrame("Frame", "AuctionatorSyncFrame", UIParent, "BackdropTemplate")
-  frame:SetSize(420, 500)
+  frame:SetSize(FRAME_W, 500)
   frame:SetPoint("CENTER")
   frame:SetFrameStrata("DIALOG")
   frame:SetMovable(true)
@@ -512,11 +417,9 @@ local function Build()
   frame.status:SetPoint("RIGHT", priceButton, "LEFT", -8, 0)
   frame.status:SetJustifyH("LEFT")
 
-  local itemButton = BuildPriceCheck(y - 50)
-
   local header = CreateFrame("Button", nil, frame)
-  header:SetPoint("TOPLEFT", itemButton, "BOTTOMLEFT", 0, -18)
-  header:SetSize(260, 16)
+  header:SetPoint("TOPLEFT", 16, y - 50)
+  header:SetSize(FRAME_W - 32 - 170, 16)
   header.text = header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   header.text:SetPoint("LEFT")
   header:SetScript("OnClick", function()
@@ -658,7 +561,7 @@ local function Build()
     local h = CreateFrame("Button", nil, t.head)
     h:SetPoint("LEFT", col.x, 0)
     h:SetHeight(16)
-    h:SetWidth(((COLUMNS[i + 1] and COLUMNS[i + 1].x) or 390) - col.x - 4)
+    h:SetWidth(((COLUMNS[i + 1] and COLUMNS[i + 1].x) or (FRAME_W - 32 - SCROLL_W - 4)) - col.x - 4)
     h.text = h:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     h.text:SetPoint("LEFT")
     h.key, h.label = col.key, col.label
@@ -681,6 +584,76 @@ local function Build()
   line:SetHeight(1)
   line:SetColorTexture(1, 0.82, 0, 0.35)
   frame.onlineTable = t
+
+  -- footer under the rows ("1-16 of 20", "Showing 3 of 6")
+  t.footer = t:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  t.footer:SetPoint("BOTTOMLEFT", 20, 2)
+
+  -- scroll bar (the mouse wheel works anywhere on the table)
+  local scroll = CreateFrame("Slider", nil, t, "BackdropTemplate")
+  scroll:SetPoint("TOPRIGHT", t.head, "BOTTOMRIGHT", 0, -2)
+  scroll:SetWidth(SCROLL_W)
+  scroll:SetOrientation("VERTICAL")
+  scroll:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8" })
+  scroll:SetBackdropColor(1, 1, 1, 0.05)
+  scroll:SetThumbTexture("Interface\\Buttons\\WHITE8X8")
+  scroll:GetThumbTexture():SetSize(SCROLL_W, 40)
+  scroll:GetThumbTexture():SetVertexColor(1, 0.82, 0, 0.5)
+  scroll:SetValueStep(1)
+  scroll:SetObeyStepOnDrag(true)
+  scroll:SetScript("OnValueChanged", function(self, value)
+    if self.ignore then return end
+    t.offset = math.floor(value + 0.5)
+    RefreshOnline()
+  end)
+  scroll:Hide()
+  t.scroll = scroll
+  t.offset = 0
+  t:EnableMouseWheel(true)
+  t:SetScript("OnMouseWheel", function(self, delta)
+    self.offset = math.max(0, (self.offset or 0) - delta * 3)
+    RefreshOnline()
+  end)
+
+  -- name search, right of the "Online" heading
+  local search = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
+  search:SetSize(150, 20)
+  search:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -18, y - 48)
+  search:SetAutoFocus(false)
+  search:SetTextInsets(0, 18, 0, 0) -- room for the x
+  local hint = search:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  hint:SetPoint("LEFT", 4, 0)
+  hint:SetText("Search names")
+  local clearSearch = CreateFrame("Button", nil, search)
+  clearSearch:SetSize(16, 16)
+  clearSearch:SetPoint("RIGHT", -2, 0)
+  clearSearch.text = clearSearch:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  clearSearch.text:SetPoint("CENTER", 0, 1)
+  clearSearch.text:SetText("x")
+  clearSearch.text:SetTextColor(0.7, 0.7, 0.7)
+  clearSearch:SetScript("OnEnter", function(self) self.text:SetTextColor(1, 0.82, 0) end)
+  clearSearch:SetScript("OnLeave", function(self) self.text:SetTextColor(0.7, 0.7, 0.7) end)
+  clearSearch:SetScript("OnClick", function()
+    search:SetText("")
+    search:ClearFocus()
+  end)
+  clearSearch:Hide()
+  search:SetScript("OnTextChanged", function(self)
+    frame.searchText = self:GetText() or ""
+    clearSearch:SetShown(frame.searchText ~= "")
+    hint:SetShown(frame.searchText == "" and not self:HasFocus())
+    t.offset = 0
+    RefreshOnline()
+  end)
+  -- clicking in selects everything, so typing replaces it
+  search:SetScript("OnEditFocusGained", function(self)
+    hint:Hide()
+    C_Timer.After(0, function() if self:HasFocus() then self:HighlightText() end end)
+  end)
+  search:SetScript("OnEditFocusLost", function(self) hint:SetShown((self:GetText() or "") == "") end)
+  search:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+  search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+  frame.search = search
 
   frame:SetScript("OnShow", Refresh)
   C_Timer.NewTicker(5, Refresh)
