@@ -10,8 +10,9 @@
 local _, ns = ...
 
 local CTL = ChatThrottleLib
-local CHUNK_ADDON = 240   -- addon messages are capped at 255 bytes
-local CHUNK_BNET = 4000   -- BNSendGameData allows ~4KB
+-- Every route is capped at 255 bytes per message, header included: addon messages by the game,
+-- and Battle.net game data by ChatThrottleLib (the game allows ~4KB, the library doesn't).
+local MAX_MESSAGE = 255
 local REASSEMBLY_TIMEOUT = 300
 local CHANNEL_NAME = "AuctionatorSyncData"
 
@@ -123,22 +124,29 @@ function ns.Send(target, msg, prio, id, onSent)
   msg.n = UnitName("player") -- Battle.net doesn't always give the receiver our character name
   local text = ns.Encode(msg)
   if not text then return end
-  local size = target.kind == "BN" and CHUNK_BNET or CHUNK_ADDON
-  local total = math.ceil(#text / size)
   id = id or NextId()
   prio = prio or "NORMAL"
-  for i = 1, total do
-    local chunk = id .. ":" .. i .. ":" .. total .. ":" .. text:sub((i - 1) * size + 1, i * size)
-    local cb = (i == total and onSent) and function() onSent() end or nil
-    if target.kind == "BN" then
-      CTL:BNSendGameData(prio, ns.PREFIX, chunk, "WHISPER", target.id, "AucSync" .. target.id, cb)
-    elseif target.kind == "WHISPER" then
-      CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "WHISPER", target.name, "AucSync" .. target.name, cb)
-    elseif target.kind == "CHANNEL" then
-      CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "CHANNEL", tostring(target.channel), "AucSyncChannel", cb)
-    else
-      CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "GUILD", nil, "AucSyncGuild", cb)
+  -- header "<id>:<part>:<total>:" sized for the largest part number, so no chunk passes 255
+  local size = MAX_MESSAGE - (#id + 3 + 2 * #tostring(math.ceil(#text / 200)))
+  local total = math.ceil(#text / size)
+  local ok, err = pcall(function()
+    for i = 1, total do
+      local chunk = id .. ":" .. i .. ":" .. total .. ":" .. text:sub((i - 1) * size + 1, i * size)
+      local cb = (i == total and onSent) and function() onSent() end or nil
+      if target.kind == "BN" then
+        CTL:BNSendGameData(prio, ns.PREFIX, chunk, "WHISPER", target.id, "AucSync" .. target.id, cb)
+      elseif target.kind == "WHISPER" then
+        CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "WHISPER", target.name, "AucSync" .. target.name, cb)
+      elseif target.kind == "CHANNEL" then
+        CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "CHANNEL", tostring(target.channel), "AucSyncChannel", cb)
+      else
+        CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "GUILD", nil, "AucSyncGuild", cb)
+      end
     end
+  end)
+  if not ok then
+    ns.Log("couldn't send to %s: %s", RouteName(target), tostring(err))
+    return nil
   end
   return id
 end

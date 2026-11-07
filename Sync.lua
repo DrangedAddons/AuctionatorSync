@@ -517,8 +517,8 @@ end
 ns.MasterFingerprint = ns.Master
 
 -- Who can host a handshake: any ready player holding the master list. Least busy first, then
--- Battle.net friends (16x bigger messages), then random, so newcomers spread out instead of
--- queueing behind one player. exclude = a set of peers to leave out.
+-- random, so newcomers spread out instead of queueing behind one player.
+-- exclude = a set of peers to leave out.
 -- Hosts that stalled or didn't answer sit out for BENCH_TIME: not picked for any handshake.
 local benched = {} -- peerKey -> until (server time)
 
@@ -560,8 +560,6 @@ local function Hosts(master, exclude)
   table.sort(list, function(a, b)
     local la, lb = a.hl or 0, b.hl or 0
     if la ~= lb then return la < lb end
-    local ba, bb = ns.ReplyTarget(a).kind == "BN", ns.ReplyTarget(b).kind == "BN"
-    if ba ~= bb then return ba end
     return a.pick < b.pick
   end)
   return list

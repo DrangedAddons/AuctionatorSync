@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1
+- Fixed: "error in CHAT_MSG_ADDON ... BNSendGameData(): message length cannot exceed 255 bytes". Messages to Battle.net friends went out in 4,000-byte pieces, but the bundled ChatThrottleLib only allows 255, so anything bigger than a status update to a Battle.net friend failed. Every route now uses pieces of at most 255 bytes, header included.
+- A failed send is logged instead of raising an error in the middle of handling a message.
+- Hosts are no longer picked ahead of others for being Battle.net friends (that relied on the bigger messages).
+
 ## 1.1.0
 - **Bigger online list in `/async`.** The price check item is gone, and the player table takes its place. The window is wider, so long statuses ("handshaking with ... - receiving 1,200 / 4,000") fit. The table shows up to 16 players, then scrolls (mouse wheel or the bar on the right), with "1-16 of 20" underneath.
 - **Search by name.** Type in the box next to "Online" to show only matching players; the matching part of each name is highlighted. Combines with the Version and Status filters ("Showing 3 of 12"). The x clears it.
