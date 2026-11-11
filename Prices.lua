@@ -281,8 +281,9 @@ local sideEntries, sideDirty = {}, true -- the sidebar's categories and counts, 
 
 local COLS = { -- x offsets inside the list
   -- Price is wide enough for the gold cap: "9,999,999g 99s 99c"
-  { key = "price", label = "Price", x = 4, w = 142, right = true },
-  { key = "name", label = "Name", x = 152, w = 226 },
+  -- (x 4-20 is the favorite star)
+  { key = "price", label = "Price", x = 24, w = 142, right = true },
+  { key = "name", label = "Name", x = 172, w = 206 },
   { key = "avail", label = "Available", x = 382, w = 62, right = true },
   { key = "seen", label = "Last seen", x = 452, w = 70 },
 }
@@ -831,10 +832,10 @@ local function Build()
       fs:SetJustifyH("RIGHT")
       l[part[1]] = fs
     end
-    -- star: click to add or remove a favorite (faint until starred)
+    -- star, first in the row: click to add or remove a favorite (faint until starred)
     local star = CreateFrame("Button", nil, l)
     star:SetSize(16, 16)
-    star:SetPoint("LEFT", COLS[2].x + 2, 0)
+    star:SetPoint("LEFT", 4, 0)
     star.tex = star:CreateTexture(nil, "ARTWORK")
     star.tex:SetAllPoints()
     star.tex:SetTexture(STAR)
@@ -849,10 +850,10 @@ local function Build()
     l.star = star
     l.icon = l:CreateTexture(nil, "ARTWORK")
     l.icon:SetSize(16, 16)
-    l.icon:SetPoint("LEFT", star, "RIGHT", 3, 0)
+    l.icon:SetPoint("LEFT", COLS[2].x + 2, 0)
     l.name = l:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     l.name:SetPoint("LEFT", l.icon, "RIGHT", 4, 0)
-    l.name:SetWidth(COLS[2].w - 43)
+    l.name:SetWidth(COLS[2].w - 24)
     l.name:SetJustifyH("LEFT")
     l.name:SetWordWrap(false)
     l.avail = l:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")

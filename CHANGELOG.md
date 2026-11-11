@@ -1,7 +1,10 @@
 # Changelog
 
+## 1.2.1
+- The favorite star is now the first thing in each Price List row, before the price, instead of between the price and the item icon.
+
 ## 1.2.0
-- **Favorites in the Price List (`/ah`).** Every row has a star left of the item icon: click it (or right-click the row) to add the item to your favorites, and again to remove it. **Favorites**, under **All** in the sidebar, lists just those items, with their count. Search, sorting and the Filter work inside it too. Favorites are saved for the whole account. **Clear filters** goes back to All.
+- **Favorites in the Price List (`/ah`).** Every row has a star: click it (or right-click the row) to add the item to your favorites, and again to remove it. **Favorites**, under **All** in the sidebar, lists just those items, with their count. Search, sorting and the Filter work inside it too. Favorites are saved for the whole account. **Clear filters** goes back to All.
 
 ## 1.1.1
 - Fixed: "error in CHAT_MSG_ADDON ... BNSendGameData(): message length cannot exceed 255 bytes". Messages to Battle.net friends went out in 4,000-byte pieces, but the bundled ChatThrottleLib only allows 255, so anything bigger than a status update to a Battle.net friend failed. Every route now uses pieces of at most 255 bytes, header included.
