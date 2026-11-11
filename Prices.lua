@@ -200,7 +200,14 @@ end
 
 local win
 local ROW_H, SIDE_W, SIDE_ROW_H = 20, 180, 18
-local state = { classID = nil, subClassID = nil, search = "" } -- this session's selection
+local state = { classID = nil, subClassID = nil, search = "", favorites = false } -- this session's selection
+
+-- Favorites: price keys starred in the list, saved account-wide in ns.db.favorites.
+local STAR = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_1"
+local function Favorites()
+  ns.db.favorites = ns.db.favorites or {}
+  return ns.db.favorites
+end
 local allRows = {}
 -- The filtered, sorted rows, kept between redraws: scrolling only redraws the visible lines.
 -- Remade only when the search, category, sort or the prices change (anything through Refresh).
@@ -301,8 +308,10 @@ local function Visible()
   local list = {}
   local search = state.search:lower()
   local f = Filters()
+  local favs = Favorites()
   for _, row in ipairs(allRows) do
-    if (not state.classID or row.classID == state.classID)
+    if (not state.favorites or favs[row.key])
+      and (not state.classID or row.classID == state.classID)
       and (not state.subClassID or row.subClassID == state.subClassID)
       and (search == "" or row.lname:find(search, 1, true))
       and PassesFilters(row, f) then
@@ -332,7 +341,14 @@ local function SideEntries()
     c.subs[row.subClassID] = c.subs[row.subClassID] + 1
   end
   table.sort(order)
-  local entries = { { label = "All", count = #allRows, all = true } }
+  local favs, favCount = Favorites(), 0
+  for _, row in ipairs(allRows) do
+    if favs[row.key] then favCount = favCount + 1 end
+  end
+  local entries = {
+    { label = "All", count = #allRows, all = true },
+    { label = "|T" .. STAR .. ":12:12|t Favorites", count = favCount, favorites = true },
+  }
   ns.db.priceExpanded = ns.db.priceExpanded or {}
   for _, classID in ipairs(order) do
     local c = classes[classID]
@@ -351,6 +367,7 @@ local function SideEntries()
 end
 
 local Refresh
+local ToggleFavorite
 
 local function RefreshSide()
   if sideDirty then sideEntries, sideDirty = SideEntries(), false end
@@ -362,8 +379,13 @@ local function RefreshSide()
     local b = side.buttons[i]
     local e = entries[side.offset + i]
     if e then
-      local selected = (e.all and not state.classID)
-        or (e.classID == state.classID and e.subClassID == state.subClassID and not e.all)
+      local selected
+      if state.favorites then
+        selected = e.favorites and true or false
+      else
+        selected = (e.all and not state.classID)
+          or (e.classID ~= nil and e.classID == state.classID and e.subClassID == state.subClassID)
+      end
       local mark = e.expandable and (e.expanded and "|cffffd100-|r " or "|cffffd100+|r ") or "  "
       b.text:SetText((e.indent and "      " or "") .. mark .. e.label .. "  |cff999999" .. ns.Num(e.count) .. "|r")
       b.text:SetTextColor(selected and 1 or 0.9, selected and 0.82 or 0.9, selected and 0 or 0.9)
@@ -391,6 +413,9 @@ local function RefreshList()
     local row = rows[list.offset + i]
     if row then
       line.row = row
+      local fav = Favorites()[row.key] and true or false
+      line.star.tex:SetDesaturated(not fav)
+      line.star.tex:SetAlpha(fav and 1 or 0.2)
       line.icon:SetTexture(row.icon)
       line.name:SetText(row.name .. (row.extra and ("  |cff999999" .. row.extra .. "|r") or ""))
       line.name:SetTextColor(QualityColor(row.quality))
@@ -407,9 +432,12 @@ local function RefreshList()
   end
   win.count:SetText(string.format("%s of %s", ns.Num(#rows), ns.Plural(#allRows, "item")))
   local filtering = FiltersActive()
-  win.clear:SetEnabled(state.classID ~= nil or state.search ~= "" or filtering)
+  win.clear:SetEnabled(state.classID ~= nil or state.favorites or state.search ~= "" or filtering)
   win.filterButton:SetText(filtering and "|cff66ccffFilter *|r" or "Filter")
   win.filterClear:SetEnabled(filtering)
+  list.empty:SetText(state.favorites and state.search == "" and not filtering
+    and "No favorites yet. Click the star on a row (or right-click the row) to add one."
+    or "No prices match.")
   list.empty:SetShown(#rows == 0)
   for _, h in ipairs(list.headings) do
     local active = (ns.db.priceSort or "name") == h.key
@@ -443,6 +471,13 @@ Refresh = function(rebuild)
   visibleDirty, sideDirty = true, true -- search, category, sort or prices may have changed
   RefreshSide()
   RefreshList()
+end
+
+-- Star or unstar a price key; the Favorites count and (in Favorites) the list update at once.
+ToggleFavorite = function(key)
+  local favs = Favorites()
+  favs[key] = (not favs[key]) or nil
+  Refresh()
 end
 
 local function Build()
@@ -659,7 +694,7 @@ local function Build()
   clear:SetPoint("TOPLEFT", 12, -37)
   clear:SetText("Clear filters")
   clear:SetScript("OnClick", function()
-    state.classID, state.subClassID = nil, nil
+    state.classID, state.subClassID, state.favorites = nil, nil, false
     ns.db.priceFilters = { rarity = {} }
     search:SetText("")
     search:ClearFocus()
@@ -702,7 +737,8 @@ local function Build()
     b:SetScript("OnClick", function(self)
       local e = self.entry
       if not e then return end
-      if e.all then
+      state.favorites = e.favorites and true or false
+      if e.all or e.favorites then
         state.classID, state.subClassID = nil, nil
       elseif e.subClassID then
         state.classID, state.subClassID = e.classID, e.subClassID
@@ -795,12 +831,28 @@ local function Build()
       fs:SetJustifyH("RIGHT")
       l[part[1]] = fs
     end
+    -- star: click to add or remove a favorite (faint until starred)
+    local star = CreateFrame("Button", nil, l)
+    star:SetSize(16, 16)
+    star:SetPoint("LEFT", COLS[2].x + 2, 0)
+    star.tex = star:CreateTexture(nil, "ARTWORK")
+    star.tex:SetAllPoints()
+    star.tex:SetTexture(STAR)
+    star:SetScript("OnClick", function() if l.row then ToggleFavorite(l.row.key) end end)
+    star:SetScript("OnEnter", function(self)
+      if not l.row then return end
+      GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+      GameTooltip:SetText(Favorites()[l.row.key] and "Remove from favorites" or "Add to favorites")
+      GameTooltip:Show()
+    end)
+    star:SetScript("OnLeave", GameTooltip_Hide)
+    l.star = star
     l.icon = l:CreateTexture(nil, "ARTWORK")
     l.icon:SetSize(16, 16)
-    l.icon:SetPoint("LEFT", COLS[2].x + 2, 0)
+    l.icon:SetPoint("LEFT", star, "RIGHT", 3, 0)
     l.name = l:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     l.name:SetPoint("LEFT", l.icon, "RIGHT", 4, 0)
-    l.name:SetWidth(COLS[2].w - 24)
+    l.name:SetWidth(COLS[2].w - 43)
     l.name:SetJustifyH("LEFT")
     l.name:SetWordWrap(false)
     l.avail = l:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -813,10 +865,20 @@ local function Build()
       GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
       local _, link = GetInfo(self.row.id)
       if link then GameTooltip:SetHyperlink(link) else GameTooltip:SetItemByID(self.row.id) end
+      GameTooltip:AddLine(Favorites()[self.row.key] and "Right-click: remove from favorites"
+        or "Right-click: add to favorites", 0.6, 0.6, 0.6)
       GameTooltip:Show()
     end)
     l:SetScript("OnLeave", GameTooltip_Hide)
-    l:SetScript("OnClick", function(self)
+    l:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    l:SetScript("OnClick", function(self, button)
+      if button == "RightButton" then
+        if self.row then
+          ToggleFavorite(self.row.key)
+          if self:IsMouseOver() and self:GetScript("OnEnter") then self:GetScript("OnEnter")(self) end
+        end
+        return
+      end
       local _, link = self.row and GetInfo(self.row.id)
       if link and HandleModifiedItemClick then HandleModifiedItemClick(link) end
     end)
