@@ -469,6 +469,16 @@ Refresh = function(rebuild)
     win.built = true
     win.builtVersion = ns.dataVersion
   end
+  if win.pickStart then
+    -- just opened: Favorites if any starred item has a price, else All
+    win.pickStart = false
+    local favs, any = Favorites(), false
+    for _, row in ipairs(allRows) do
+      if favs[row.key] then any = true; break end
+    end
+    state.favorites, state.classID, state.subClassID = any, nil, nil
+    win.list.offset, win.side.offset = 0, 0
+  end
   visibleDirty, sideDirty = true, true -- search, category, sort or prices may have changed
   RefreshSide()
   RefreshList()
@@ -938,6 +948,7 @@ local function Build()
   win.loading = loading
 
   win:SetScript("OnShow", function()
+    win.pickStart = true
     ns.WarmNames()
     onProgress = function()
       local done, total = ns.NameProgress()

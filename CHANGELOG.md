@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.2.2
+- The Price List (`/ah`) opens on **Favorites** when you have any favorite with a price, and on **All** otherwise. It picks again each time you open it.
+
 ## 1.2.1
 - The favorite star is now the first thing in each Price List row, before the price, instead of between the price and the item icon.
 
