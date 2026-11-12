@@ -369,6 +369,7 @@ end
 
 local Refresh
 local ToggleFavorite
+local LinkClick
 
 local function RefreshSide()
   if sideDirty then sideEntries, sideDirty = SideEntries(), false end
@@ -482,6 +483,31 @@ Refresh = function(rebuild)
   visibleDirty, sideDirty = true, true -- search, category, sort or prices may have changed
   RefreshSide()
   RefreshList()
+end
+
+-- Clicking a row's item: Shift puts its link wherever the game would (the open chat box, the
+-- auction house search, a profession search...). If nothing takes it, chat opens with the link
+-- in it. Other modifiers (Ctrl: try it on) go to the game as usual. ns.ownLink keeps our own
+-- link-watcher (OnInsertLink, below) from copying it into the /ah search.
+local InsertLinkFn = (ChatFrameUtil and ChatFrameUtil.InsertLink) or ChatEdit_InsertLink
+local OpenChatFn = (ChatFrameUtil and ChatFrameUtil.OpenChat) or ChatFrame_OpenChat
+LinkClick = function(id, tries)
+  local _, link = GetInfo(id)
+  if not link then
+    -- not in the item cache yet: ask for it and finish the click when it arrives
+    if (tries or 0) < 1 and Item and Item.CreateFromItemID then
+      Item:CreateFromItemID(id):ContinueOnItemLoad(function() LinkClick(id, (tries or 0) + 1) end)
+    end
+    return
+  end
+  if IsModifiedClick and IsModifiedClick("CHATLINK") and InsertLinkFn then
+    ns.ownLink = true
+    local ok, inserted = pcall(InsertLinkFn, link)
+    ns.ownLink = false
+    if not (ok and inserted) and OpenChatFn then OpenChatFn(link) end
+  elseif HandleModifiedItemClick then
+    HandleModifiedItemClick(link)
+  end
 end
 
 -- Star or unstar a price key; the Favorites count and (in Favorites) the list update at once.
@@ -876,6 +902,7 @@ local function Build()
       GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
       local _, link = GetInfo(self.row.id)
       if link then GameTooltip:SetHyperlink(link) else GameTooltip:SetItemByID(self.row.id) end
+      GameTooltip:AddLine("Shift-click: link it in chat", 0.6, 0.6, 0.6)
       GameTooltip:AddLine(Favorites()[self.row.key] and "Right-click: remove from favorites"
         or "Right-click: add to favorites", 0.6, 0.6, 0.6)
       GameTooltip:Show()
@@ -890,8 +917,7 @@ local function Build()
         end
         return
       end
-      local _, link = self.row and GetInfo(self.row.id)
-      if link and HandleModifiedItemClick then HandleModifiedItemClick(link) end
+      if self.row then LinkClick(self.row.id) end
     end)
     list.lines[i] = l
   end
@@ -977,7 +1003,7 @@ end
 -- into the search box, like the auction house. Not while typing in chat (the link goes there).
 -- Hooked from outside, like Auctionator does: replacing the function causes taint.
 local function OnInsertLink(text)
-  if not win or not win:IsShown() or type(text) ~= "string" then return end
+  if ns.ownLink or not win or not win:IsShown() or type(text) ~= "string" then return end
   local focus = GetCurrentKeyBoardFocus and GetCurrentKeyBoardFocus()
   if focus and focus ~= win.search then return end -- a chat box (or something else) is taking it
   local name = text:match("|h%[(.-)%]|h") or text:match("%[(.-)%]")

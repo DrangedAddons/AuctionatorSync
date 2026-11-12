@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.3
+- Shift-clicking an item in the Price List (`/ah`) links it the way it would from your bags: into the open chat box, or the auction house or profession search if that's where you're typing. With nowhere to put it, chat opens with the link in it. Before, with no chat box open, the item's name went into the Price List's own search box instead.
+- The row tooltip lists both clicks: Shift-click to link, right-click for favorites.
+
 ## 1.2.2
 - The Price List (`/ah`) opens on **Favorites** when you have any favorite with a price, and on **All** otherwise. It picks again each time you open it.
 
