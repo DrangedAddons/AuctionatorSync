@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.3.2
+- The Filter's Slot, Stats and Sort by stat lists open beside the row you clicked again, level with its arrow, still capped at 14 rows with a scroll bar.
+
 ## 1.3.1
 - The Slot, Stats and Sort by stat lists in the Price List's Filter show at most 14 rows (fewer if the screen ends sooner) and scroll with the mouse wheel or the bar on the right. They open level with the top of the Filter panel instead of running off the bottom of the screen.
 

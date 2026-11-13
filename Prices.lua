@@ -798,7 +798,7 @@ local function Build()
   end)
   local function FlyRows()
     local rows = FLY_MAX
-    local top = panel:GetTop()
+    local top = fly.anchor and fly.anchor:GetTop()
     if top then rows = math.min(rows, math.floor((top - 24) / FLY_H)) end
     return math.max(5, rows)
   end
@@ -849,7 +849,9 @@ local function Build()
     self.anchor, self.build, self.offset = anchor, build, 0
     self:Fill()
     self:ClearAllPoints()
-    self:SetPoint("TOPLEFT", panel, "TOPRIGHT", 2, 0) -- level with the Filter panel's top
+    -- beside the row you clicked, level with its arrow, just past the Filter panel's edge
+    self:SetPoint("TOP", anchor, "TOP", 0, 4)
+    self:SetPoint("LEFT", panel, "RIGHT", 2, 0)
     self:Show()
   end
   panel:SetScript("OnHide", function() fly:Hide() end)
