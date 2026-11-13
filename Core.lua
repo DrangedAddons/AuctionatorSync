@@ -10,10 +10,7 @@ ns.PROTOCOL = 4
 
 -- Account-wide: the Auctionator price database these settings act on is account-wide too.
 local DEFAULTS = {
-  shareScans = true,     -- send my changed prices when a scan finishes / the AH closes
-  catchUpOnLogin = true, -- handshake with the host when I log in
   announce = true,       -- automatic chat messages (sign-in, sync results)
-  verbose = false,       -- verbose mode: record every step in the log window
   minimap = { hide = false }, -- minimap button (LibDBIcon keeps its position here too)
 }
 
@@ -47,10 +44,10 @@ function ns.NameList(names)
   return names[1] .. ", " .. names[2] .. " and " .. (n - 2) .. " others"
 end
 
--- Verbose mode: every step goes into the log (last LOG_MAX lines, kept across /reload) and
--- the log window, never chat.
+-- The log: sync activity goes into it (last LOG_MAX lines, kept across /reload), shown at the
+-- bottom of the /async window, never in chat. Always recording.
 function ns.Log(fmt, ...)
-  if not (ns.db and ns.db.verbose and ns.store) then return end
+  if not (ns.db and ns.store) then return end
   local ok, text = pcall(string.format, fmt, ...)
   if not ok then text = fmt end
   local line = "|cff888888" .. date("%H:%M:%S") .. "|r  " .. text
@@ -122,6 +119,8 @@ ns.On("ADDON_LOADED", function(name)
   db.log = db.log or {}
   db.names = db.names or {} -- the Price List's name book: [itemID] = { name, quality }
   db.settings.debug = nil -- replaced by verbose mode
+  -- always on since 1.3.0 (no longer options): sharing scans, syncing at login, the log
+  db.settings.shareScans, db.settings.catchUpOnLogin, db.settings.verbose = true, true, true
   db.settings.guild, db.settings.friends, db.settings.bnet, db.settings.maxAgeDays = nil, nil, nil, nil -- everyone with the addon syncs
   ns.store = db
   ns.db = db.settings
@@ -143,7 +142,7 @@ local function AttachedTo(frame, target)
   end
   return false
 end
-local WINDOWS = { "AuctionatorSyncFrame", "AuctionatorSyncPriceListFrame", "AuctionatorSyncMonitorFrame" }
+local WINDOWS = { "AuctionatorSyncFrame", "AuctionatorSyncPriceListFrame" }
 
 -- prefer: a window to dock against first, if it's open.
 -- free: don't attach, and don't move it at all unless where it is now overlaps an open window.
@@ -255,14 +254,10 @@ SlashCmdList.AUCTIONATORSYNC = function(msg)
     ns.PrintStatus()
   elseif cmd == "prices" or cmd == "pricelist" then
     ns.TogglePriceList()
-  elseif cmd == "monitor" then
-    ns.ToggleMonitor()
-  elseif cmd == "log" or cmd == "debug" then
-    ns.ToggleLog()
-  elseif cmd == "" then
+  elseif cmd == "" or cmd == "monitor" or cmd == "log" or cmd == "debug" then
     ns.ToggleWindow()
   else
     ns.Print("|cffffd100/async|r window · |cffffd100/async sync|r sync now · "
-      .. "|cffffd100/async status|r what's synced · |cffffd100/ah|r or |cffffd100/async prices|r price list · |cffffd100/async log|r verbose log")
+      .. "|cffffd100/async status|r what's synced · |cffffd100/ah|r or |cffffd100/async prices|r price list")
   end
 end

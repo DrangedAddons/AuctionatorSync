@@ -180,7 +180,7 @@ local function BuildRows()
     local id = ns.ItemIDFromKey(key)
     local known = id and book[id]
     if known then
-      local _, _, _, _, icon, classID, subClassID = GetInstant(id)
+      local _, _, _, equipLoc, icon, classID, subClassID = GetInstant(id)
       local extra = key:match("^g:%d+:(%d+)")
       local suffix = key:match("^gr:%d+:(.+)$")
       local name = known[1]
@@ -189,6 +189,7 @@ local function BuildRows()
         key = key, id = id, name = name, lname = name:lower(), extra = extra and ("ilvl " .. extra) or nil,
         quality = known[2], level = known[3] or 0, price = e[2], seen = e[3], avail = e[4],
         icon = icon, classID = classID or -1, subClassID = subClassID or -1,
+        slot = ns.SlotOf(equipLoc),
       }
     end
   end
@@ -226,6 +227,9 @@ local function Filters()
   ns.db.priceFilters = ns.db.priceFilters or { rarity = {} }
   local f = ns.db.priceFilters
   f.rarity = f.rarity or {}
+  f.slot = f.slot or {}   -- [slot] = true: with any ticked, only those slots show
+  f.stats = f.stats or {} -- [stat key] = true: with any ticked, only items with all of them show
+  -- f.statSort = stat key to sort by (highest first; f.statLow flips it), nil = the column sort
   for q, v in pairs(f.rarity) do
     if v ~= true then f.rarity[q] = nil end -- 0.15.0 stored "hidden" as false; that meaning is gone
   end
@@ -238,7 +242,8 @@ end
 
 local function FiltersActive()
   local f = Filters()
-  return (f.minLevel or f.maxLevel or f.usable or f.uncollected or AnyRarity(f)) and true or false
+  return (f.minLevel or f.maxLevel or f.usable or f.uncollected or AnyRarity(f) or next(f.slot)
+    or next(f.stats) or f.statSort) and true or false
 end
 
 local function Usable(id)
@@ -275,6 +280,13 @@ local function PassesFilters(row, f)
   if f.maxLevel and row.level > f.maxLevel then return false end
   if f.usable and not Usable(row.id) then return false end
   if f.uncollected and not Uncollected(row.id) then return false end
+  if next(f.slot) and not (row.slot and f.slot[row.slot]) then return false end
+  if next(f.stats) then
+    local st = ns.ItemStatsOf(row)
+    for key in pairs(f.stats) do
+      if (st[key] or 0) <= 0 then return false end
+    end
+  end
   return true
 end
 local sideEntries, sideDirty = {}, true -- the sidebar's categories and counts, likewise
@@ -289,6 +301,22 @@ local COLS = { -- x offsets inside the list
 }
 
 local function SortRows(rows)
+  local f = Filters()
+  local statKey, low = f.statSort, f.statLow
+  if statKey then
+    -- by one stat: items that have it first (highest, or lowest when flipped), the rest after by name
+    for _, r in ipairs(rows) do r.sortStat = ns.ItemStatsOf(r)[statKey] end
+    table.sort(rows, function(a, b)
+      local x, y = a.sortStat, b.sortStat
+      if x and y and x ~= y then
+        if low then return x < y end
+        return x > y
+      end
+      if (x ~= nil) ~= (y ~= nil) then return x ~= nil end
+      return a.lname < b.lname
+    end)
+    return
+  end
   local key, desc = ns.db.priceSort or "name", ns.db.priceSortDesc and true or false
   table.sort(rows, function(a, b)
     local x, y
@@ -419,7 +447,12 @@ local function RefreshList()
       line.star.tex:SetDesaturated(not fav)
       line.star.tex:SetAlpha(fav and 1 or 0.2)
       line.icon:SetTexture(row.icon)
-      line.name:SetText(row.name .. (row.extra and ("  |cff999999" .. row.extra .. "|r") or ""))
+      local statText = ""
+      local sortKey = Filters().statSort
+      if sortKey and row.sortStat then
+        statText = string.format("  |cff66ccff+%s %s|r", ns.Num(row.sortStat), ns.StatLabel(sortKey))
+      end
+      line.name:SetText(row.name .. (row.extra and ("  |cff999999" .. row.extra .. "|r") or "") .. statText)
       line.name:SetTextColor(QualityColor(row.quality))
       local g, sv, c = math.floor(row.price / 10000), math.floor(row.price / 100) % 100, row.price % 100
       line.gold:SetText(g > 0 and (ns.Num(g) .. COIN_GOLD) or "")
@@ -442,7 +475,7 @@ local function RefreshList()
     or "No prices match.")
   list.empty:SetShown(#rows == 0)
   for _, h in ipairs(list.headings) do
-    local active = (ns.db.priceSort or "name") == h.key
+    local active = not Filters().statSort and (ns.db.priceSort or "name") == h.key
     h.text:SetText(h.label .. (active and (ns.db.priceSortDesc and " v" or " ^") or ""))
     h.text:SetTextColor(1, active and 1 or 0.82, active and 1 or 0)
   end
@@ -694,6 +727,176 @@ local function Build()
       function() return Filters().rarity[q[1]] == true end,
       function(on) Filters().rarity[q[1]] = on or nil end)
   end
+  y = y - 8
+
+  -- Slot / Stats / Sort by stat: each opens a list to the right (like CraftRoute's filter)
+  local fly = CreateFrame("Frame", nil, panel, "BackdropTemplate")
+  fly:SetWidth(210)
+  fly:SetFrameStrata("FULLSCREEN_DIALOG")
+  fly:SetFrameLevel(panel:GetFrameLevel() + 10)
+  fly:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+  fly:SetBackdropColor(0.08, 0.08, 0.1, 0.97)
+  fly:SetBackdropBorderColor(0.4, 0.4, 0.45, 1)
+  fly:EnableMouse(true)
+  fly:Hide()
+  fly.items = {}
+  local FLY_H = 20
+  local function FlyItem(i)
+    local it = fly.items[i]
+    if it then return it end
+    it = CreateFrame("Button", nil, fly)
+    it:SetHeight(FLY_H)
+    it:SetPoint("TOPLEFT", 1, -4 - (i - 1) * FLY_H)
+    it:SetPoint("RIGHT", -1, 0)
+    it.hl = it:CreateTexture(nil, "HIGHLIGHT")
+    it.hl:SetAllPoints()
+    it.hl:SetColorTexture(1, 0.82, 0, 0.15)
+    it.box = it:CreateTexture(nil, "ARTWORK")
+    it.box:SetSize(18, 18)
+    it.box:SetPoint("LEFT", 6, 0)
+    it.box:SetTexture("Interface\\Buttons\\UI-CheckBox-Up")
+    it.check = it:CreateTexture(nil, "OVERLAY")
+    it.check:SetAllPoints(it.box)
+    it.check:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+    it.text = it:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    it.text:SetJustifyH("LEFT")
+    it:SetScript("OnClick", function(self)
+      if not self.onClick then return end
+      self.onClick()
+      fly:Fill()
+      panel:SyncOpeners()
+      Changed()
+    end)
+    fly.items[i] = it
+    return it
+  end
+  -- entries: { header = text [, onClick] } | { label, checked = bool, onClick }
+  function fly:Fill()
+    local entries = self.build()
+    for i, e in ipairs(entries) do
+      local it = FlyItem(i)
+      it.onClick = e.onClick
+      it.text:ClearAllPoints()
+      if e.header then
+        it.text:SetPoint("LEFT", 8, 0)
+        it.text:SetText(e.header)
+        it.text:SetTextColor(1, 0.82, 0)
+        it.box:Hide()
+        it.check:Hide()
+      else
+        it.text:SetPoint("LEFT", it.box, "RIGHT", 4, 0)
+        it.text:SetText(e.label)
+        it.text:SetTextColor(1, 1, 1)
+        it.box:Show()
+        it.check:SetShown(e.checked and true or false)
+      end
+      it.hl:SetShown(e.onClick ~= nil)
+      it:EnableMouse(e.onClick ~= nil)
+      it:Show()
+    end
+    for i = #entries + 1, #self.items do self.items[i]:Hide() end
+    self:SetHeight(#entries * FLY_H + 8)
+  end
+  function fly:Open(anchor, build)
+    if self:IsShown() and self.anchor == anchor then self:Hide(); return end
+    self.anchor, self.build = anchor, build
+    self:Fill()
+    self:ClearAllPoints()
+    self:SetPoint("TOPLEFT", anchor, "TOPRIGHT", 10, 4)
+    self:Show()
+  end
+  panel:SetScript("OnHide", function() fly:Hide() end)
+
+  -- stat entries grouped under their headings; kind "check" (Stats) or "pick" (Sort by stat)
+  local function StatEntries(entries, kind)
+    local f, group = Filters(), nil
+    for _, st in ipairs(ns.STATS) do
+      if st[3] ~= group then
+        group = st[3]
+        entries[#entries + 1] = { header = group }
+      end
+      local key = st[1]
+      if kind == "check" then
+        entries[#entries + 1] = { label = st[2], checked = f.stats[key],
+          onClick = function() f.stats[key] = (not f.stats[key]) or nil end }
+      else
+        entries[#entries + 1] = { label = st[2], checked = f.statSort == key,
+          onClick = function() f.statSort = key end }
+      end
+    end
+    return entries
+  end
+
+  local BUILDS = {
+    slot = function()
+      local f, present = Filters(), {}
+      for _, row in ipairs(allRows) do
+        if row.slot then present[row.slot] = true end
+      end
+      local entries = { { label = "Any slot", checked = not next(f.slot), onClick = function() wipe(f.slot) end } }
+      for _, s in ipairs(ns.SLOT_ORDER) do
+        if present[s] or f.slot[s] then
+          entries[#entries + 1] = { label = ns.SlotLabel(s), checked = f.slot[s],
+            onClick = function() f.slot[s] = (not f.slot[s]) or nil end }
+        end
+      end
+      return entries
+    end,
+    stats = function()
+      local f = Filters()
+      return StatEntries({ { label = "Any stats", checked = not next(f.stats), onClick = function() wipe(f.stats) end } },
+        "check")
+    end,
+    sort = function()
+      local f = Filters()
+      return StatEntries({
+        { header = (f.statLow and "Lowest first" or "Highest first") .. "  |cff888888(click to flip)|r",
+          onClick = function() f.statLow = (not f.statLow) or nil end },
+        { label = "Columns (default)", checked = not f.statSort, onClick = function() f.statSort = nil end },
+      }, "pick")
+    end,
+  }
+  local function Count(t)
+    local n = 0
+    for _ in pairs(t) do n = n + 1 end
+    return n
+  end
+  local OPENERS = {
+    { key = "slot", label = "Slot", count = function(f) return Count(f.slot) end },
+    { key = "stats", label = "Stats", count = function(f) return Count(f.stats) end },
+    { key = "sort", label = "Sort by stat", count = function(f) return f.statSort and 1 or 0 end },
+  }
+  panel.openers = {}
+  for _, o in ipairs(OPENERS) do
+    local b = CreateFrame("Button", nil, panel)
+    b:SetHeight(20)
+    b:SetPoint("TOPLEFT", 8, y)
+    b:SetPoint("RIGHT", panel, "RIGHT", -8, 0)
+    local hl = b:CreateTexture(nil, "HIGHLIGHT")
+    hl:SetAllPoints()
+    hl:SetColorTexture(1, 0.82, 0, 0.15)
+    b.text = b:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    b.text:SetPoint("LEFT", 4, 0)
+    local arrow = b:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    arrow:SetPoint("RIGHT", -4, 0)
+    arrow:SetText(">")
+    b.def = o
+    b:SetScript("OnClick", function(self) fly:Open(self, BUILDS[o.key]) end)
+    panel.openers[#panel.openers + 1] = b
+    y = y - 22
+  end
+  function panel:SyncOpeners()
+    local f = Filters()
+    for _, b in ipairs(self.openers) do
+      local extra = ""
+      if b.def.key == "sort" and f.statSort then
+        extra = "  |cff66ccff" .. ns.StatLabel(f.statSort) .. "|r"
+      elseif b.def.count(f) > 0 then
+        extra = "  |cff66ccff(" .. b.def.count(f) .. ")|r"
+      end
+      b.text:SetText(b.def.label .. extra)
+    end
+  end
   panel:SetHeight(-y + 8)
 
   function panel:Sync()
@@ -701,11 +904,13 @@ local function Build()
     self.minBox:SetText(f.minLevel and tostring(f.minLevel) or "")
     self.maxBox:SetText(f.maxLevel and tostring(f.maxLevel) or "")
     for _, cb in ipairs(self.checks) do cb:SetChecked(cb.get() and true or false) end
+    self:SyncOpeners()
+    if fly:IsShown() then fly:Fill() end
   end
   -- a click anywhere else closes it
   panel:SetScript("OnUpdate", function(self)
     if (IsMouseButtonDown("LeftButton") or IsMouseButtonDown("RightButton"))
-      and not self:IsMouseOver() and not filterButton:IsMouseOver() then
+      and not self:IsMouseOver() and not fly:IsMouseOver() and not filterButton:IsMouseOver() then
       self:Hide()
     end
   end)
@@ -838,7 +1043,11 @@ local function Build()
       h:SetScript("OnLeave", GameTooltip_Hide)
     end
     h:SetScript("OnClick", function(self)
-      if (ns.db.priceSort or "name") == self.key then
+      if Filters().statSort then
+        -- sorted by a stat: a column click goes back to sorting by columns
+        Filters().statSort = nil
+        if win.filterPanel:IsShown() then win.filterPanel:Sync() end
+      elseif (ns.db.priceSort or "name") == self.key then
         ns.db.priceSortDesc = not ns.db.priceSortDesc
       else
         ns.db.priceSort, ns.db.priceSortDesc = self.key, false

@@ -1,25 +1,16 @@
--- /async window: settings, Sync now, and who's online with AuctionatorSync (searchable table).
+-- /async window, top to bottom: settings, Sync now, who's online with AuctionatorSync (searchable
+-- table), then the Sync Monitor and the log (Monitor.lua, Log.lua).
 local _, ns = ...
 
 local frame
 
 local OPTIONS = {
-  { key = "shareScans", label = "Share my scans with everyone online",
-    tip = "When an Auctionator scan finishes, or you close the auction house after searching, the prices that changed go to everyone online with AuctionatorSync." },
-  { key = "catchUpOnLogin", label = "Sync when I log in",
-    tip = "Handshake with in-sync players when you come online, so you start with the master list (the newest prices)." },
   { key = "announce", label = "Show chat messages",
     tip = "Sign-in and sync messages in chat. Replies to /async commands and Sync now always show." },
   { key = "minimapShown", label = "Show minimap button",
     tip = "Left-click it for these settings, right-click for the Price List.",
     get = function() return not ns.db.minimap.hide end,
     onClick = function(on) ns.SetMinimapShown(on) end },
-  { key = "verbose", label = "Verbose mode",
-    tip = "Records sync activity in the log at the bottom of the Sync Monitor (who came online, who is syncing with whom, scans shared, problems). Only you see it.",
-    onClick = function(on)
-      if on then ns.ShowMonitor(true) end
-      if ns.RefreshLogSection then ns.RefreshLogSection(false) end
-    end },
 }
 
 local function Ago(ts)
@@ -42,9 +33,9 @@ end
 
 local ROW_H = 18
 local VISIBLE_MAX = 16 -- rows shown before the table scrolls
-local FRAME_W = 480
+local FRAME_W = 700
 -- x offsets of the columns (Player starts at 20, after the host crown)
-local COL_VERSION, COL_STATUS, COL_LAST = 170, 232, 374
+local COL_VERSION, COL_STATUS, COL_LAST = 220, 300, 580
 local SCROLL_W = 10
 
 -- Click a heading for its menu: the sort choices, and (Version, Status) the filters. The host
@@ -316,11 +307,16 @@ local function RefreshOnline()
     bottom = frame.peers
   end
 
-  -- grow or shrink the window to fit
+  -- the Sync Monitor goes under the list; the window grows or shrinks to fit both
   local top, listTop = frame:GetTop(), bottom:GetTop()
   if top and listTop then
     local h = bottom == t and t:GetHeight() or frame.peers:GetStringHeight()
-    frame:SetHeight(top - listTop + h + 14)
+    local monTop = top - listTop + h + 12
+    local mon = frame.monitor
+    mon:ClearAllPoints()
+    mon:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, -monTop)
+    mon:SetPoint("TOPRIGHT", frame, "TOPRIGHT", 0, -monTop)
+    frame:SetHeight(monTop + mon:GetHeight() + 4)
   end
 end
 
@@ -362,12 +358,13 @@ local function Build()
   local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
   close:SetPoint("TOPRIGHT", 2, 2)
 
+  -- the settings, side by side on one line
   frame.checks = {}
   local y = -42
-  for _, opt in ipairs(OPTIONS) do
+  for i, opt in ipairs(OPTIONS) do
     local cb = CreateFrame("CheckButton", nil, frame, "UICheckButtonTemplate")
     cb:SetSize(24, 24)
-    cb:SetPoint("TOPLEFT", 12, y)
+    cb:SetPoint("TOPLEFT", 12 + (i - 1) * 240, y)
     cb.key, cb.get = opt.key, opt.get
     local label = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     label:SetPoint("LEFT", cb, "RIGHT", 4, 0)
@@ -390,8 +387,8 @@ local function Build()
       cb:SetScript("OnLeave", GameTooltip_Hide)
     end
     table.insert(frame.checks, cb)
-    y = y - 26
   end
+  y = y - 26
 
   local sync = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
   sync:SetSize(90, 24)
@@ -399,16 +396,9 @@ local function Build()
   sync:SetText("Sync now")
   sync:SetScript("OnClick", function() ns.CatchUp(true) end)
 
-  -- the Sync Monitor (with the log in it)
-  local monitorButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
-  monitorButton:SetSize(70, 24)
-  monitorButton:SetPoint("TOPRIGHT", -16, y - 8)
-  monitorButton:SetText("Monitor")
-  monitorButton:SetScript("OnClick", function() ns.ToggleMonitor() end)
-
   local priceButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
   priceButton:SetSize(80, 24)
-  priceButton:SetPoint("RIGHT", monitorButton, "LEFT", -4, 0)
+  priceButton:SetPoint("TOPRIGHT", -16, y - 8)
   priceButton:SetText("Price List")
   priceButton:SetScript("OnClick", function() ns.TogglePriceList() end)
 
@@ -655,9 +645,29 @@ local function Build()
   search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
   frame.search = search
 
-  frame:SetScript("OnShow", Refresh)
+  -- the Sync Monitor and the log, under the online list (RefreshOnline places it)
+  frame.monitor = ns.BuildMonitorSection(frame, function()
+    if frame:IsShown() then RefreshOnline() end
+  end)
+
+  frame:SetScript("OnShow", function()
+    Refresh()
+    ns.RefreshLogSection(true)
+    ns.RefreshMonitor()
+  end)
   C_Timer.NewTicker(5, Refresh)
   frame:Hide() -- a new frame starts shown; start hidden so the first /async opens it
+end
+
+function ns.ShowWindow(show)
+  if not frame then Build() end
+  if show and not frame:IsShown() then
+    ns.PlaceWindow(frame)
+    frame:Show()
+  elseif not show then
+    frame:Hide()
+  end
+  Refresh()
 end
 
 function ns.ToggleWindow()

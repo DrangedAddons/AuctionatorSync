@@ -580,10 +580,6 @@ function ns.ShareChanges(why)
   end
   wipe(pending)
   if #list == 0 then return end
-  if not ns.db.shareScans then
-    ns.Log("%s changed %s; not shared (sharing is off)", why, ns.Plural(#list, "price"))
-    return
-  end
   local online = 0
   for _, peer in pairs(ns.peers) do
     if ns.IsPeerOnline(peer) and Compatible(peer) then online = online + 1 end
@@ -1451,13 +1447,7 @@ ns.On("PLAYER_ENTERING_WORLD", function()
     if not ns.canEncode then return end
     ns.HookAuctionator()
     ns.Log("%s came online (v%s)", ns.MyName(), ns.VERSION)
-    if ns.db.catchUpOnLogin then
-      ns.CatchUp(false)
-    else
-      ns.Log("syncing at login is off: %s gets scan updates, but no handshake", ns.MyName())
-      SetState("ready")
-      ns.Broadcast(StateMsg("HELLO"), "NORMAL", true)
-    end
+    ns.CatchUp(false)
   end)
 end)
 

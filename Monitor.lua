@@ -1,16 +1,19 @@
 -- Sync Monitor: a torrent-client style view of who is syncing right now, with the log underneath
--- (Log.lua builds that part; it moves down as the rows above it grow).
+-- (Log.lua builds that part; it moves down as the rows above it grow). It's a section of the
+-- /async window (UI.lua), below the online list.
 --   top:    the master list (short fingerprint, prices, newest price) and how many are online
 --   rows:   only players doing something right now - handshaking (with how many hosts, toward
 --           which master list), receiving updates, sharing a scan, hosting others - with a
 --           progress bar
 --   below:  this character's own transfers in detail (pieces and batches)
---   footer: everyone else, compacted: in sync / not in sync yet / can't sync (old version)
+--   footer: hosts benched for stalling (who's in sync is in the online list above)
 local _, ns = ...
 
-local win
+local win      -- the section frame
+local onResize -- tells the /async window the section's height changed
 local floor = math.floor
 local ROW_H, MAX_ROWS, MAX_DETAIL = 20, 10, 6
+local HEAD_Y = -32 -- column headings, under the title line
 local COLS = {
   { key = "name", label = "Player", x = 8 },
   { key = "activity", label = "Activity", x = 140 },
@@ -129,7 +132,7 @@ local function DetailLines()
 end
 
 local function Refresh()
-  if not win or not win:IsShown() then return end
+  if not win or not win:IsVisible() then return end
   local active, inSync, behind, old, master = Gather()
   local online = #active + #inSync + #behind + #old
   local count = tonumber(ns.Fingerprint():match("%-(%d+)$")) or 0
@@ -171,20 +174,14 @@ local function Refresh()
   local detailShown = math.min(#detail, MAX_DETAIL)
   win.detailHeader:SetShown(detailShown > 0)
 
-  -- compact footer
-  local foot = {}
-  if #inSync > 0 then foot[#foot + 1] = string.format("|cff33ff99In sync (%d):|r %s", #inSync, table.concat(inSync, ", ")) end
-  if #behind > 0 then foot[#foot + 1] = string.format("|cffff5555Not in sync yet (%d):|r %s", #behind, table.concat(behind, ", ")) end
-  if #old > 0 then foot[#foot + 1] = string.format("|cff808080Can't sync, old version (%d):|r %s", #old, table.concat(old, ", ")) end
+  -- footer: benched hosts only (the online list above shows who's in sync)
   local bench = {}
   for _, b in ipairs(ns.BenchedHosts()) do bench[#bench + 1] = string.format("%s (%dm)", b.name, math.ceil(b.left / 60)) end
-  if #bench > 0 then
-    foot[#foot + 1] = string.format("|cffff9966Benched as host (stalled or didn't answer):|r %s", table.concat(bench, ", "))
-  end
-  win.footer:SetText(table.concat(foot, "\n"))
+  win.footer:SetText(#bench > 0
+    and string.format("|cffff9966Benched as host (stalled or didn't answer):|r %s", table.concat(bench, ", ")) or "")
 
   -- lay out the lower parts under however many rows there are
-  local y = -66 - shown * ROW_H - 8
+  local y = HEAD_Y - 20 - shown * ROW_H - 8
   win.detailHeader:ClearAllPoints()
   win.detailHeader:SetPoint("TOPLEFT", 12, y)
   if detailShown > 0 then y = y - 16 end
@@ -196,45 +193,46 @@ local function Refresh()
   win.footer:ClearAllPoints()
   win.footer:SetPoint("TOPLEFT", 12, y)
   win.footer:SetPoint("RIGHT", win, "RIGHT", -12, 0)
-  y = y - win.footer:GetStringHeight() - 10
+  if #bench > 0 then y = y - win.footer:GetStringHeight() - 10 end
 
   -- the log, right under it
   win.log:ClearAllPoints()
   win.log:SetPoint("TOPLEFT", win, "TOPLEFT", 0, y)
   win.log:SetPoint("RIGHT", win, "RIGHT")
-  win:SetHeight(-y + ns.LogHeight())
+  local h = -y + ns.LogHeight()
+  if math.abs(h - (win:GetHeight() or 0)) > 0.5 then
+    win:SetHeight(h)
+    if onResize then onResize() end
+  end
   ns.RefreshLogSection(false)
 end
+ns.RefreshMonitor = Refresh
 
-local function Build()
-  win = CreateFrame("Frame", "AuctionatorSyncMonitorFrame", UIParent, "BackdropTemplate")
-  win:SetSize(700, 200)
-  win:SetPoint("CENTER", 0, 150)
-  win:SetFrameStrata("DIALOG")
-  win:SetMovable(true)
-  win:EnableMouse(true)
-  win:RegisterForDrag("LeftButton")
-  win:SetScript("OnDragStart", ns.DragStart) -- moves its docked group; Alt-drag undocks it
-  win:SetScript("OnDragStop", ns.DragStop)
-  win:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
-  win:SetBackdropColor(0.04, 0.04, 0.06, 0.95)
-  win:SetBackdropBorderColor(0.3, 0.3, 0.35, 1)
-  table.insert(UISpecialFrames, "AuctionatorSyncMonitorFrame")
+-- Builds the section inside parent (the /async window). resized() is called when its height
+-- changes, so the window can grow or shrink to fit.
+function ns.BuildMonitorSection(parent, resized)
+  onResize = resized
+  win = CreateFrame("Frame", nil, parent)
+  win:SetHeight(200)
+
+  local divider = win:CreateTexture(nil, "ARTWORK")
+  divider:SetPoint("TOPLEFT", 4, 0)
+  divider:SetPoint("TOPRIGHT", -4, 0)
+  divider:SetHeight(1)
+  divider:SetColorTexture(1, 0.82, 0, 0.35)
 
   local title = win:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   title:SetPoint("TOPLEFT", 12, -10)
   title:SetText("Sync Monitor")
-  local close = CreateFrame("Button", nil, win, "UIPanelCloseButton")
-  close:SetPoint("TOPRIGHT", 2, 2)
 
   win.summary = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  win.summary:SetPoint("TOPLEFT", 12, -30)
+  win.summary:SetPoint("LEFT", title, "RIGHT", 12, 0)
   win.summary:SetTextColor(0.75, 0.75, 0.75)
 
   -- column headings
   local head = CreateFrame("Frame", nil, win)
-  head:SetPoint("TOPLEFT", 4, -46)
-  head:SetPoint("TOPRIGHT", -4, -46)
+  head:SetPoint("TOPLEFT", 4, HEAD_Y)
+  head:SetPoint("TOPRIGHT", -4, HEAD_Y)
   head:SetHeight(18)
   for _, col in ipairs(COLS) do
     local fs = head:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -306,25 +304,9 @@ local function Build()
     Refresh()
   end)
   C_Timer.NewTicker(1, Refresh)
-  win:Hide()
+  return win
 end
 
-function ns.ShowMonitor(show)
-  if not win then Build() end
-  if show then
-    if not win:IsShown() then
-      -- stays where it was, unless that's on top of another open window: then it moves to a free
-      -- spot beside it (not attached)
-      ns.PlaceWindow(win, nil, true)
-      win:Show()
-    end
-    Refresh()
-  else
-    win:Hide()
-  end
-end
-
-function ns.ToggleMonitor()
-  if not win then Build() end
-  ns.ShowMonitor(not win:IsShown())
-end
+-- The monitor and log are part of the /async window now.
+function ns.ShowMonitor(show) ns.ShowWindow(show) end
+function ns.ToggleMonitor() ns.ToggleWindow() end

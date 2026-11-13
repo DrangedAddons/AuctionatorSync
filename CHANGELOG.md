@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0
+- **One window.** `/async` now holds everything: the settings and **Sync now** at the top, the online list under them, then the Sync Monitor and the log. The separate Sync Monitor window and its button are gone (`/async monitor` and `/async log` open `/async`). The Monitor's footer now lists only benched hosts, since the online list shows who's in sync.
+- **Always on:** sharing your scans, syncing when you log in, and the log are no longer options. The `/async` settings are just **Show chat messages** and **Show minimap button**, side by side.
+- **Price List filters like CraftRoute's.** The Filter dropdown in `/ah` has three new lists that open to the side:
+  - **Slot:** show only gear for the ticked slots (Head, Chest, One-Hand, Trinket, Bag...). Only slots that have prices are listed.
+  - **Stats:** show only items with every ticked stat: attributes, spell (healing, spell damage per school, spell crit and hit, mana per 5), physical (attack power, crit, hit), defense (armor, defense, dodge, parry, block, health per 5), resistances, bag slots.
+  - **Sort by stat:** sort by one stat, highest first (click the top line to flip it). The value shows next to each item's name. Clicking a column heading goes back to the column sort.
+  - Stats are read from each item's tooltip, so "Equip:" bonuses count. Each item is read once per session.
+
 ## 1.2.3
 - Shift-clicking an item in the Price List (`/ah`) links it the way it would from your bags: into the open chat box, or the auction house or profession search if that's where you're typing. With nowhere to put it, chat opens with the link in it. Before, with no chat box open, the item's name went into the Price List's own search box instead.
 - The row tooltip lists both clicks: Shift-click to link, right-click for favorites.

@@ -1,6 +1,6 @@
--- The log: the bottom part of the Sync Monitor window (Monitor.lua builds the window and places
--- this under the monitor rows, moving it down as they grow). Lines come from ns.Log while Verbose
--- mode is on; the last few hundred are kept across /reload. Only you see it.
+-- The log: the bottom of the /async window, under the Sync Monitor rows (Monitor.lua places it
+-- and moves it down as they grow). Lines come from ns.Log, always recording; the last few
+-- hundred are kept across /reload. Only you see it.
 local _, ns = ...
 
 local section
@@ -24,9 +24,6 @@ function ns.BuildLogSection(win, relayout)
   local title = section:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   title:SetPoint("TOPLEFT", 12, -8)
   title:SetText("Log")
-
-  section.state = section:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  section.state:SetPoint("LEFT", title, "RIGHT", 10, 0)
 
   local clear = CreateFrame("Button", nil, section, "UIPanelButtonTemplate")
   clear:SetSize(70, 20)
@@ -83,11 +80,9 @@ function ns.BuildLogSection(win, relayout)
   return section
 end
 
--- Reload the lines from the saved log (when the window opens) and update the recording note.
+-- Reload the lines from the saved log (when the window opens).
 function ns.RefreshLogSection(reload)
   if not section then return end
-  section.state:SetText(ns.db.verbose and "|cff33ff99recording|r"
-    or "|cffff9966not recording (Verbose mode is off)|r")
   if reload then
     section.lines:Clear()
     for _, line in ipairs(ns.store.log) do section.lines:AddMessage(line) end
@@ -99,6 +94,6 @@ function ns.OnLogLine(line)
   if section and section:IsVisible() then section.lines:AddMessage(line) end
 end
 
--- The log lives in the Sync Monitor now.
+-- The log lives in the /async window now.
 function ns.ShowLog(show) ns.ShowMonitor(show) end
 function ns.ToggleLog() ns.ToggleMonitor() end
