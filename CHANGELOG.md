@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.3.1
+- The Slot, Stats and Sort by stat lists in the Price List's Filter show at most 14 rows (fewer if the screen ends sooner) and scroll with the mouse wheel or the bar on the right. They open level with the top of the Filter panel instead of running off the bottom of the screen.
+
 ## 1.3.0
 - **One window.** `/async` now holds everything: the settings and **Sync now** at the top, the online list under them, then the Sync Monitor and the log. The separate Sync Monitor window and its button are gone (`/async monitor` and `/async log` open `/async`). The Monitor's footer now lists only benched hosts, since the online list shows who's in sync.
 - **Always on:** sharing your scans, syncing when you log in, and the log are no longer options. The `/async` settings are just **Show chat messages** and **Show minimap button**, side by side.

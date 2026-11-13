@@ -770,11 +770,58 @@ local function Build()
     fly.items[i] = it
     return it
   end
+  -- At most FLY_MAX rows (fewer if the screen ends sooner); longer lists scroll (mouse wheel
+  -- or the bar on the right).
+  local FLY_MAX = 14
+  fly.offset = 0
+  local flyScroll = CreateFrame("Slider", nil, fly, "BackdropTemplate")
+  flyScroll:SetPoint("TOPRIGHT", -3, -4)
+  flyScroll:SetPoint("BOTTOMRIGHT", -3, 4)
+  flyScroll:SetWidth(8)
+  flyScroll:SetOrientation("VERTICAL")
+  flyScroll:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8" })
+  flyScroll:SetBackdropColor(1, 1, 1, 0.05)
+  flyScroll:SetThumbTexture("Interface\\Buttons\\WHITE8X8")
+  flyScroll:GetThumbTexture():SetSize(8, 30)
+  flyScroll:GetThumbTexture():SetVertexColor(1, 0.82, 0, 0.5)
+  flyScroll:SetValueStep(1)
+  flyScroll:SetObeyStepOnDrag(true)
+  flyScroll:SetScript("OnValueChanged", function(self, value)
+    if self.ignore then return end
+    fly.offset = math.floor(value + 0.5)
+    fly:Fill()
+  end)
+  fly:EnableMouseWheel(true)
+  fly:SetScript("OnMouseWheel", function(self, delta)
+    self.offset = math.max(0, self.offset - delta * 3)
+    self:Fill()
+  end)
+  local function FlyRows()
+    local rows = FLY_MAX
+    local top = panel:GetTop()
+    if top then rows = math.min(rows, math.floor((top - 24) / FLY_H)) end
+    return math.max(5, rows)
+  end
+
   -- entries: { header = text [, onClick] } | { label, checked = bool, onClick }
   function fly:Fill()
-    local entries = self.build()
+    local all = self.build()
+    local fit = math.min(#all, FlyRows())
+    local maxOffset = math.max(0, #all - fit)
+    self.offset = math.min(self.offset, maxOffset)
+    local entries = {}
+    for i = 1, fit do entries[i] = all[self.offset + i] end
+    flyScroll:SetShown(maxOffset > 0)
+    if maxOffset > 0 then
+      flyScroll.ignore = true
+      flyScroll:SetMinMaxValues(0, maxOffset)
+      flyScroll:SetValue(self.offset)
+      flyScroll.ignore = false
+      flyScroll:GetThumbTexture():SetHeight(math.max(20, (fit * FLY_H) * fit / #all))
+    end
     for i, e in ipairs(entries) do
       local it = FlyItem(i)
+      it:SetPoint("RIGHT", maxOffset > 0 and -13 or -1, 0)
       it.onClick = e.onClick
       it.text:ClearAllPoints()
       if e.header then
@@ -799,10 +846,10 @@ local function Build()
   end
   function fly:Open(anchor, build)
     if self:IsShown() and self.anchor == anchor then self:Hide(); return end
-    self.anchor, self.build = anchor, build
+    self.anchor, self.build, self.offset = anchor, build, 0
     self:Fill()
     self:ClearAllPoints()
-    self:SetPoint("TOPLEFT", anchor, "TOPRIGHT", 10, 4)
+    self:SetPoint("TOPLEFT", panel, "TOPRIGHT", 2, 0) -- level with the Filter panel's top
     self:Show()
   end
   panel:SetScript("OnHide", function() fly:Hide() end)
