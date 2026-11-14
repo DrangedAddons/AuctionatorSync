@@ -254,10 +254,13 @@ SlashCmdList.AUCTIONATORSYNC = function(msg)
     ns.PrintStatus()
   elseif cmd == "prices" or cmd == "pricelist" then
     ns.TogglePriceList()
+  elseif cmd == "ahinfo" then
+    ns.PrintAHInfo()
   elseif cmd == "" or cmd == "monitor" or cmd == "log" or cmd == "debug" then
     ns.ToggleWindow()
   else
     ns.Print("|cffffd100/async|r window · |cffffd100/async sync|r sync now · "
-      .. "|cffffd100/async status|r what's synced · |cffffd100/ah|r or |cffffd100/async prices|r price list")
+      .. "|cffffd100/async status|r what's synced · |cffffd100/ah|r or |cffffd100/async prices|r price list · "
+      .. "|cffffd100/async ahinfo|r neutral or faction auction house check")
   end
 end

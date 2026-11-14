@@ -14,5 +14,6 @@ Requires [Auctionator](https://www.curseforge.com/wow/addons/auctionator).
 - `/async` - settings, who's online, the Sync Monitor and the log, in one window
 - `/async sync` - sync now
 - `/async status` - sync status in chat
+- `/async ahinfo` - how the last auction house you opened was identified (neutral or faction)
 
 Also available from the minimap button, a key binding (Keybindings > AddOns > AuctionatorSync) and Options > AddOns > AuctionatorSync.

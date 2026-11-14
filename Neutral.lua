@@ -93,15 +93,101 @@ local function Divert(on)
   end
 end
 
--- The goblin auctioneers belong to no faction; faction auctioneers are Alliance or Horde.
+-- Is this a neutral auction house? Every check we have, from strongest to weakest:
+--   1. the auctioneer's NPC ID: the goblin auctioneers (from wowhead.com/forever) or the
+--      faction ones. Decides on its own.
+--   2. the auctioneer's faction: goblins report neither Alliance nor Horde.
+--   3. where you are: Booty Bay, Gadgetzan, Everlook (English names; Quickcoin travels, so
+--      this only backs the others up).
+-- An auctioneer we don't know goes by its faction. Whenever the checks disagree, the log says
+-- so, so the lists can be fixed. ns.lastAH keeps the details for /async ahinfo.
+local NEUTRAL_AUCTIONEERS = {
+  [9858] = "Kresky", [15681] = "O'reely", [15677] = "Graves", -- Booty Bay
+  [8661] = "Beardo",                                           -- Gadgetzan
+  [9857] = "Grizzlin",                                         -- Everlook
+  [258878] = "Quickcoin",                                      -- Booty Bay goblin in Redridge / The Barrens (Forever 1.60.1)
+}
+local FACTION_AUCTIONEERS = {
+  [8670] = true, [15659] = true, [8719] = true,                -- Stormwind
+  [9859] = true, [8671] = true, [8720] = true,                 -- Ironforge
+  [8723] = true, [15679] = true, [8669] = true, [15678] = true, -- Darnassus
+  [8673] = true, [8724] = true, [9856] = true,                 -- Orgrimmar
+  [8722] = true, [8674] = true,                                -- Thunder Bluff
+  [15686] = true, [15676] = true, [8721] = true, [15682] = true, [15684] = true,
+  [15683] = true, [8672] = true, [15675] = true,               -- Undercity
+}
+local NEUTRAL_TOWNS = { ["Booty Bay"] = true, ["Gadgetzan"] = true, ["Everlook"] = true }
+
+local function NpcID(unit)
+  local guid = UnitGUID(unit)
+  if type(guid) ~= "string" then return nil end
+  local kind, _, _, _, _, id = strsplit("-", guid)
+  if kind ~= "Creature" then return nil end
+  return tonumber(id)
+end
+
 local function NeutralAuctioneer()
-  for _, unit in ipairs({ "npc", "target" }) do
-    if UnitExists(unit) and not UnitIsPlayer(unit) then
-      local faction = UnitFactionGroup(unit)
-      return faction ~= "Alliance" and faction ~= "Horde"
-    end
+  local unit
+  for _, u in ipairs({ "npc", "target" }) do
+    if UnitExists(u) and not UnitIsPlayer(u) then unit = u; break end
   end
-  return false
+  local info = { at = ns.Now(), subzone = GetSubZoneText and GetSubZoneText() or "",
+    zone = GetRealZoneText and GetRealZoneText() or "" }
+  ns.lastAH = info
+  info.town = NEUTRAL_TOWNS[info.subzone] or NEUTRAL_TOWNS[info.zone] or false
+  if unit then
+    info.name, info.id, info.faction = UnitName(unit), NpcID(unit), UnitFactionGroup(unit)
+  end
+  local noFaction = unit ~= nil and info.faction ~= "Alliance" and info.faction ~= "Horde"
+  info.noFaction = noFaction
+
+  local neutral, why
+  if info.id and NEUTRAL_AUCTIONEERS[info.id] then
+    neutral, why = true, "neutral auctioneer " .. info.id
+  elseif info.id and FACTION_AUCTIONEERS[info.id] then
+    neutral, why = false, "faction auctioneer " .. info.id
+  elseif unit then
+    neutral, why = noFaction, noFaction and "auctioneer has no faction" or ("auctioneer is " .. tostring(info.faction))
+  else
+    neutral, why = false, "couldn't see the auctioneer"
+  end
+  info.neutral, info.why = neutral, why
+
+  -- say so when the checks disagree
+  local notes = {}
+  if unit and noFaction ~= neutral then
+    notes[#notes + 1] = "faction says " .. (noFaction and "neutral" or tostring(info.faction))
+  end
+  if info.town ~= neutral and not (info.id == 258878) then
+    notes[#notes + 1] = "location (" .. (info.subzone ~= "" and info.subzone or info.zone) .. ") says "
+      .. (info.town and "neutral town" or "not a neutral town")
+  end
+  if #notes > 0 then
+    ns.Log("auction house check: treated as %s (%s), but %s - /async ahinfo for details",
+      neutral and "neutral" or "faction", why, table.concat(notes, "; "))
+  end
+  return neutral
+end
+
+-- /async ahinfo: everything the checks saw at the last auction house, plus any auction house
+-- functions in this client that might tell neutral from faction directly.
+function ns.PrintAHInfo()
+  local info = ns.lastAH
+  if not info then
+    ns.Print("Open an auction house first, then /async ahinfo.")
+  else
+    ns.Print("Last auction house (%s): %s - %s.", date("%H:%M", info.at), info.neutral and "|cff66ccffneutral|r" or "faction", info.why)
+    ns.Print("  Auctioneer: %s, NPC ID %s, faction %s.", tostring(info.name or "?"), tostring(info.id or "?"),
+      tostring(info.faction or "none"))
+    ns.Print("  Location: %s / %s (%s).", info.zone, info.subzone ~= "" and info.subzone or "-",
+      info.town and "a neutral town" or "not a neutral town")
+  end
+  local names = {}
+  for k in pairs(C_AuctionHouse or {}) do
+    if k:find("Neutral") or k:find("Faction") or k:find("Cut") or k:find("Deposit") then names[#names + 1] = k end
+  end
+  table.sort(names)
+  ns.Print("  Auction house API names with Neutral/Faction/Cut/Deposit: %s.", #names > 0 and table.concat(names, ", ") or "none")
 end
 
 local function ShareSeen()

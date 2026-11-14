@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.4.1
+- Neutral auction houses are told apart with every check available, strongest first:
+  1. The auctioneer's NPC ID, from Forever's own list: Kresky, O'reely and Graves (Booty Bay), Beardo (Gadgetzan), Grizzlin (Everlook), and Quickcoin, Forever's Booty Bay goblin in Redridge and The Barrens. The faction auction houses' auctioneers are listed too.
+  2. The auctioneer's faction: goblins are neither Alliance nor Horde. An auctioneer not on either list goes by this.
+  3. Where you are: Booty Bay, Gadgetzan or Everlook.
+- When the checks disagree, the log says so.
+- `/async ahinfo` prints what the checks saw at the last auction house you opened. That's the auctioneer, its NPC ID and faction, the location and the verdict, plus any auction house functions in the client whose names mention Neutral, Faction, Cut or Deposit.
+
 ## 1.4.0
 - **Neutral auction house list.** Booty Bay, Gadgetzan and Everlook have their own listings, but Auctionator keeps one price list for everything, so a visit there overwrote your faction prices (and AuctionatorSync then shared them). Now, when the auctioneer you open has no faction, the prices Auctionator saves go to a separate neutral list instead. Your faction prices aren't touched.
 - The neutral list syncs on its own: new prices go out to everyone when you close the neutral auction house, and at login you get what's new from someone who has it. Prices seen while nobody was online go out at your next login. Older versions ignore these messages.
