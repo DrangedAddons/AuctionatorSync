@@ -1058,6 +1058,8 @@ local function DoneHosting(tkey)
   end
 end
 
+local newerSeen = false -- "a newer version is out" shown this session
+
 function ns.OnMessage(msg, peer)
   local r = Realm()
   if not r or msg.r ~= ns.RealmKey() then
@@ -1068,16 +1070,19 @@ function ns.OnMessage(msg, peer)
     return
   end
   peer.otherRealm = nil
+  if not newerSeen and msg.v and ns.VERSION ~= "?" and not ns.VersionAtLeast(ns.VERSION, msg.v) then
+    newerSeen = true
+    ns.Print("|cffffd100A newer AuctionatorSync (v%s) is out - you have v%s. Update it in the DrangedAddons manager.|r",
+      tostring(msg.v), ns.VERSION)
+  end
   if not Compatible(peer) then
     -- too old: nothing of theirs is used (older than 1.4.0 mixes neutral AH prices in)
     if not peer.warned then
       peer.warned = true
       ns.Log("%s is on v%s, which can't sync with v%s - they need to update",
         peer.name, tostring(msg.v), ns.VERSION)
-      ns.Notice("%s has an old AuctionatorSync (v%s) and can't sync until they update.", peer.name, tostring(msg.v))
-      -- a little later: by then we know who else is online, so only one player whispers them
-      local v = msg.v
-      C_Timer.After(20, function() if ns.WarnOldVersion then ns.WarnOldVersion(peer, v) end end)
+      ns.Print("|cffff9966%s has an old AuctionatorSync (v%s) and can't sync until they update to %s or newer.|r",
+        peer.name, tostring(msg.v), ns.MIN_VERSION)
     end
     return
   end
@@ -1519,31 +1524,3 @@ function ns.PrintStatus()
   end
 end
 
-----------------------------------------------------------------------------------------------
--- Old versions: one whisper asking them to update. Only the player online longest among
--- those who can sync sends it (so they don't get one from everyone), at most once a day each.
-
-function ns.WarnOldVersion(peer, version)
-  if not peer or not peer.name or (peer.bnID and not peer.routes.whisper and not peer.routes.guild
-    and not peer.routes.channel) then
-    return -- Battle.net-only: no character name to whisper
-  end
-  local mine = ns.onlineSince or math.huge
-  for _, p in pairs(ns.peers) do
-    if p ~= peer and ns.IsPeerOnline(p) and Compatible(p) and (p.os or math.huge) < mine then return end
-  end
-  ns.store.oldWarned = ns.store.oldWarned or {}
-  local key, today = ns.ShortName(peer.name), date("%Y-%m-%d")
-  if ns.store.oldWarned[key] == today then return end
-  ns.store.oldWarned[key] = today
-  local text = string.format("[AuctionatorSync] Your AuctionatorSync (v%s) is out of date, so it can't sync with "
-    .. "anyone any more. Please update to %s or newer in the DrangedAddons manager, then restart the game.",
-    tostring(version or "?"), ns.MIN_VERSION)
-  local send = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
-  local ok, err = pcall(send, text, "WHISPER", nil, peer.name)
-  if ok then
-    ns.Log("%s asked %s to update (v%s)", ns.MyName(), peer.name, tostring(version))
-  else
-    ns.Log("couldn't whisper %s to update: %s", peer.name, tostring(err))
-  end
-end

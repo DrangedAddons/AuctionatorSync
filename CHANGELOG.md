@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.3
+- No whisper to players on old versions after all. Instead, a chat line tells you who's on an old version and needs to update to 1.4.0 or newer.
+- New: when someone online runs a newer AuctionatorSync than you, chat says so once per session, with a reminder to update in the DrangedAddons manager. Versions before this one can't show that message.
+
 ## 1.4.2
 - **No more syncing with versions older than 1.4.0.** They don't keep neutral auction house prices apart, so a Booty Bay, Gadgetzan or Everlook scan from one of them would land in everyone's normal prices. Nothing they send is used any more, and they're never picked to host. 1.4.0 and newer sync as before.
 - Players on an old version show as **needs update** in the online list. You get one chat note naming them.
