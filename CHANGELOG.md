@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.4
+- Fixed chat filling with "No player named 'X' is currently playing." when someone logged from one character to another mid-sync. Battle.net still reported their old character's name, so their messages kept that character showing online and it kept getting whispered sync data. The name the sender puts in the message now comes first.
+- If a whisper to a sync partner fails because they've logged off, AuctionatorSync now marks them offline right away, stops sending to them and hides those error lines. Before, it waited up to ~4 minutes of silence.
+
 ## 1.4.3
 - No whisper to players on old versions after all. Instead, a chat line tells you who's on an old version and needs to update to 1.4.0 or newer.
 - New: when someone online runs a newer AuctionatorSync than you, chat says so once per session, with a reminder to update in the DrangedAddons manager. Versions before this one can't show that message.

@@ -102,6 +102,10 @@ function ns.RefreshRosters() end -- kept for older callers; nothing to cache any
 ----------------------------------------------------------------------------------------------
 -- Sending
 
+-- short name -> when we last whispered them addon data (to recognise "No player named..." errors)
+local whispered = {}
+local WHISPER_ERROR_WINDOW = 60
+
 local msgCounter = 0
 local function NextId()
   msgCounter = msgCounter + 1
@@ -136,6 +140,7 @@ function ns.Send(target, msg, prio, id, onSent)
       if target.kind == "BN" then
         CTL:BNSendGameData(prio, ns.PREFIX, chunk, "WHISPER", target.id, "AucSync" .. target.id, cb)
       elseif target.kind == "WHISPER" then
+        whispered[ns.ShortName(target.name)] = GetTime()
         CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "WHISPER", target.name, "AucSync" .. target.name, cb)
       elseif target.kind == "CHANNEL" then
         CTL:SendAddonMessage(prio, ns.PREFIX, chunk, "CHANNEL", tostring(target.channel), "AucSyncChannel", cb)
@@ -271,8 +276,8 @@ local function Deliver(name, route, text, bnID)
   if not whole then return end
   local msg = ns.Decode(whole)
   if not msg or type(msg.t) ~= "string" or msg.sid == ns.SESSION then return end
-  -- Battle.net can report an empty character name: use the name the sender put in the
-  -- message, or the player we already know with that session / Battle.net account.
+  -- Battle.net names the game account's character, which can be empty or stale (still the alt
+  -- they logged off). The name the sender put in the message wins over it.
   if bnID then
     local bySid, byAccount
     for _, p in pairs(ns.peers) do
@@ -283,7 +288,7 @@ local function Deliver(name, route, text, bnID)
     end
     if bySid then
       name = bySid.name -- same login we already know (maybe through the guild)
-    elseif not name and type(msg.n) == "string" and msg.n ~= "" then
+    elseif type(msg.n) == "string" and msg.n ~= "" then
       name = msg.n
     elseif not name and byAccount then
       name = byAccount.name -- older version: no name in the message
@@ -315,6 +320,38 @@ ns.On("CHAT_MSG_ADDON", function(prefix, text, channel, sender)
   if not route then return end
   Deliver(Ambiguate and Ambiguate(sender, "none") or sender, route, text)
 end)
+
+-- Whispering someone who logged off gives "No player named 'X' is currently playing." once per
+-- chunk. If we whispered them recently: hide the message, mark them offline and stop sending.
+local notFound
+if type(ERR_CHAT_PLAYER_NOT_FOUND_S) == "string" then
+  notFound = "^" .. ERR_CHAT_PLAYER_NOT_FOUND_S:gsub("[%%%(%)%.%+%-%*%?%[%]%^%$]", "%%%0"):gsub("%%%%s", "(.+)") .. "$"
+end
+
+local function WhisperFailed(text)
+  local name = notFound and type(text) == "string" and text:match(notFound)
+  local short = name and ns.ShortName(name)
+  local t = short and whispered[short]
+  if not t or GetTime() - t > WHISPER_ERROR_WINDOW then return nil end
+  return short
+end
+
+ns.On("CHAT_MSG_SYSTEM", function(text)
+  local short = WhisperFailed(text)
+  local peer = short and ns.peers[short]
+  if not peer or peer.gone then return end
+  peer.gone = true
+  peer.lastHeard = nil
+  ns.Log("%s is offline (whisper failed)", peer.name)
+  if ns.CancelTransfersTo then ns.CancelTransfersTo(peer.name, "they went offline") end
+  if ns.AnnounceState then ns.AnnounceState() end
+end)
+
+if ChatFrame_AddMessageEventFilter then
+  ChatFrame_AddMessageEventFilter("CHAT_MSG_SYSTEM", function(_, _, text)
+    return WhisperFailed(text) ~= nil
+  end)
+end
 
 ns.On("BN_CHAT_MSG_ADDON", function(prefix, text, _, senderID)
   if prefix ~= ns.PREFIX or not senderID then return end
