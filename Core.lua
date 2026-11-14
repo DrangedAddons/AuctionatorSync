@@ -7,6 +7,22 @@ local GetMeta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
 ns.VERSION = (GetMeta and GetMeta(addonName, "Version")) or "?"
 ns.PREFIX = "AucSync"
 ns.PROTOCOL = 4
+-- The oldest version we sync with: 1.4.0 keeps neutral auction house prices apart. Older
+-- versions would share Booty Bay / Gadgetzan / Everlook prices as normal ones.
+ns.MIN_VERSION = "1.4.0"
+
+-- "1.10.2" >= "1.4.0": compared number by number
+function ns.VersionAtLeast(v, min)
+  local a, b = {}, {}
+  for n in tostring(v or ""):gmatch("%d+") do a[#a + 1] = tonumber(n) end
+  for n in tostring(min):gmatch("%d+") do b[#b + 1] = tonumber(n) end
+  if #a == 0 then return false end
+  for i = 1, math.max(#a, #b) do
+    local x, y = a[i] or 0, b[i] or 0
+    if x ~= y then return x > y end
+  end
+  return true
+end
 
 -- Account-wide: the Auctionator price database these settings act on is account-wide too.
 local DEFAULTS = {

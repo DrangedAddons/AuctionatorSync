@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.2
+- **No more syncing with versions older than 1.4.0.** They don't keep neutral auction house prices apart, so a Booty Bay, Gadgetzan or Everlook scan from one of them would land in everyone's normal prices. Nothing they send is used any more, and they're never picked to host. 1.4.0 and newer sync as before.
+- Players on an old version show as **needs update** in the online list. You get one chat note naming them.
+- They get one whisper asking them to update ("[AuctionatorSync] Your AuctionatorSync (v1.3.2) is out of date..."). Only the player who has been online longest sends it, at most once a day per player, so they aren't flooded. Battle.net-only friends can't be whispered by character name, so they only show as needing an update.
+
 ## 1.4.1
 - Neutral auction houses are told apart with every check available, strongest first:
   1. The auctioneer's NPC ID, from Forever's own list: Kresky, O'reely and Graves (Booty Bay), Beardo (Gadgetzan), Grizzlin (Everlook), and Quickcoin, Forever's Booty Bay goblin in Redridge and The Barrens. The faction auction houses' auctioneers are listed too.
