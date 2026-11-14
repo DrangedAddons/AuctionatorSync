@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.0
+- **Neutral auction house list.** Booty Bay, Gadgetzan and Everlook have their own listings, but Auctionator keeps one price list for everything, so a visit there overwrote your faction prices (and AuctionatorSync then shared them). Now, when the auctioneer you open has no faction, the prices Auctionator saves go to a separate neutral list instead. Your faction prices aren't touched.
+- The neutral list syncs on its own: new prices go out to everyone when you close the neutral auction house, and at login you get what's new from someone who has it. Prices seen while nobody was online go out at your next login. Older versions ignore these messages.
+- **Tabs in the Price List (`/ah`):** your faction's auction house (Alliance AH / Horde AH) and **Neutral AH**. It opens on Neutral AH while you're at a neutral auction house. Favorites, search and the filters work on both.
+- While you're at a neutral auction house, Auctionator's own windows (selling, tooltips) still show your faction prices; the neutral ones are in `/ah`.
+
 ## 1.3.2
 - The Filter's Slot, Stats and Sort by stat lists open beside the row you clicked again, level with its arrow, still capped at 14 rows with a scroll bar.
 

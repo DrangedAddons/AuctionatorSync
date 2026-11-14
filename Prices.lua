@@ -45,11 +45,13 @@ end
 -- Every distinct item ID in the price list.
 local function ItemIDs()
   local ids, seen = {}, {}
-  for _, e in ipairs(ns.PriceEntries()) do
-    local id = ns.ItemIDFromKey(e[1])
-    if id and not seen[id] then
-      seen[id] = true
-      ids[#ids + 1] = id
+  for _, source in ipairs({ ns.PriceEntries(), ns.NeutralEntries and ns.NeutralEntries() or {} }) do
+    for _, e in ipairs(source) do
+      local id = ns.ItemIDFromKey(e[1])
+      if id and not seen[id] then
+        seen[id] = true
+        ids[#ids + 1] = id
+      end
     end
   end
   return ids
@@ -173,9 +175,12 @@ local function Money(copper)
 end
 
 -- All rows we can show: resolved names only.
+local state -- (below) this session's selection; state.neutral = the Neutral AH tab
+
 local function BuildRows()
   local rows, book = {}, Book()
-  for _, e in ipairs(ns.PriceEntries()) do
+  local source = state.neutral and ns.NeutralEntries() or ns.PriceEntries()
+  for _, e in ipairs(source) do
     local key = e[1]
     local id = ns.ItemIDFromKey(key)
     local known = id and book[id]
@@ -201,7 +206,7 @@ end
 
 local win
 local ROW_H, SIDE_W, SIDE_ROW_H = 20, 180, 18
-local state = { classID = nil, subClassID = nil, search = "", favorites = false } -- this session's selection
+state = { classID = nil, subClassID = nil, search = "", favorites = false, neutral = false }
 
 -- Favorites: price keys starred in the list, saved account-wide in ns.db.favorites.
 local STAR = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_1"
@@ -466,6 +471,13 @@ local function RefreshList()
     end
   end
   win.count:SetText(string.format("%s of %s", ns.Num(#rows), ns.Plural(#allRows, "item")))
+  for _, b in ipairs(win.tabs) do
+    local on = b.neutral == state.neutral
+    if on then b:LockHighlight() else b:UnlockHighlight() end
+    local fs = b:GetFontString()
+    if fs then fs:SetTextColor(on and 1 or 0.75, on and 0.82 or 0.75, on and 0 or 0.75) end
+  end
+  win.title:SetText(state.neutral and "Price List  |cff999999- Neutral AH|r" or "Price List")
   local filtering = FiltersActive()
   win.clear:SetEnabled(state.classID ~= nil or state.favorites or state.search ~= "" or filtering)
   win.filterButton:SetText(filtering and "|cff66ccffFilter *|r" or "Filter")
@@ -543,6 +555,19 @@ LinkClick = function(id, tries)
   end
 end
 
+-- Switch between your faction's auction house prices and the neutral ones.
+function ns.ShowPriceTab(neutral)
+  if not win or not win:IsShown() or state.neutral == neutral then return end
+  state.neutral = neutral and true or false
+  win.pickStart = true -- Favorites if any in this list, else All
+  win.list.offset, win.side.offset = 0, 0
+  Refresh(true)
+end
+-- opening a neutral auction house with the Price List open: show its tab
+ns.OnNeutralChanged = function()
+  if ns.atNeutralAH then ns.ShowPriceTab(true) end
+end
+
 -- Star or unstar a price key; the Favorites count and (in Favorites) the list update at once.
 ToggleFavorite = function(key)
   local favs = Favorites()
@@ -570,6 +595,34 @@ local function Build()
   local title = win:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
   title:SetPoint("TOP", 0, -10)
   title:SetText("Price List")
+
+  -- top left: which auction house's prices. Neutral (Booty Bay, Gadgetzan, Everlook) is a list
+  -- of its own (Neutral.lua); the other is Auctionator's, from your faction's auction houses.
+  local faction = UnitFactionGroup("player")
+  local TABS = {
+    { neutral = false, label = (faction == "Horde" and "Horde" or faction == "Alliance" and "Alliance" or "Faction") .. " AH",
+      tip = "Prices from your faction's auction houses (Auctionator's list)." },
+    { neutral = true, label = "Neutral AH",
+      tip = "Prices from the neutral auction houses in Booty Bay, Gadgetzan and Everlook, kept and synced as a list of their own." },
+  }
+  win.tabs = {}
+  for i, t in ipairs(TABS) do
+    local b = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
+    b:SetSize(100, 20)
+    b:SetPoint("TOPLEFT", 12 + (i - 1) * 104, -8)
+    b:SetText(t.label)
+    b.neutral = t.neutral
+    b:SetScript("OnClick", function() ns.ShowPriceTab(t.neutral) end)
+    b:SetScript("OnEnter", function(self)
+      GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
+      GameTooltip:SetText(t.label)
+      GameTooltip:AddLine(t.tip, 1, 1, 1, true)
+      GameTooltip:Show()
+    end)
+    b:SetScript("OnLeave", GameTooltip_Hide)
+    win.tabs[i] = b
+  end
+  win.title = title
   local close = CreateFrame("Button", nil, win, "UIPanelCloseButton")
   close:SetPoint("TOPRIGHT", 2, 2)
 
@@ -1233,6 +1286,7 @@ local function Build()
 
   win:SetScript("OnShow", function()
     win.pickStart = true
+    state.neutral = ns.atNeutralAH and true or false
     ns.WarmNames()
     onProgress = function()
       local done, total = ns.NameProgress()

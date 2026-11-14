@@ -3,8 +3,9 @@
 Auctionator companion addon for WoW Forever.
 
 - Auction house price sync between players with AuctionatorSync installed.
+- Neutral auction house prices (Booty Bay, Gadgetzan, Everlook) are kept and synced as a list of their own, so they never mix with your faction prices.
 - New auction data is synced and shared automatically whenever someone views or scans the auction house and discovers new prices.
-- Browse the auction house listings at any time (`/ah`), with a Favorites tab for the items you check often, and filters for gear slot and stats (sort by any stat).
+- Browse the auction house listings at any time (`/ah`), faction or neutral, with a Favorites tab for the items you check often, and filters for gear slot and stats (sort by any stat).
 
 Requires [Auctionator](https://www.curseforge.com/wow/addons/auctionator).
 

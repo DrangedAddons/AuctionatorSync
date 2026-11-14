@@ -313,7 +313,8 @@ local transferCounter = 0
 -- One transfer of BATCH-sized DATA messages, the last marked fin. target = nil -> everyone.
 -- extra: fields copied onto every message (a handshake piece's bk / pc). Every message carries
 -- tot (the transfer's size), and each batch logs when it has actually been sent.
-local KIND_WORDS = { join = "handshake piece", reply = "handshake reply", fwd = "share-out" }
+local KIND_WORDS = { join = "handshake piece", reply = "handshake reply", fwd = "share-out",
+  neutral = "neutral AH prices" }
 ns.KIND_WORDS = KIND_WORDS
 
 -- Transfers we're sending right now (for the Sync Monitor): { to, kind, tot, sent, started }
@@ -454,7 +455,8 @@ local function StateMsg(t)
     rt = (ns.ReceiveAmounts and select(2, ns.ReceiveAmounts())) or nil, sa = (ns.SendAmounts and select(1, ns.SendAmounts())) or nil,
     st2 = (ns.SendAmounts and select(2, ns.SendAmounts())) or nil, hc = ns.MyHostsCount and ns.MyHostsCount() or nil,
     tg = ns.MyTarget and ns.MyTarget() or nil, rp = ns.ReceiveProgress and ns.ReceiveProgress() or nil,
-    sp = ns.SendProgress and ns.SendProgress() or nil }
+    sp = ns.SendProgress and ns.SendProgress() or nil,
+    nh = 1 } -- nh: keeps a neutral auction house list (1.4.0+), so it can answer NREQ
 end
 
 -- Tell everyone our state/fingerprint (debounced: several changes in a row send one message).
@@ -1011,6 +1013,7 @@ local function NoteState(peer, msg, isHello)
   peer.rx = tonumber(msg.rx) or 0
   peer.hc, peer.tg, peer.rp, peer.sp = tonumber(msg.hc), msg.tg, tonumber(msg.rp), tonumber(msg.sp)
   peer.ph = msg.ph
+  peer.nh = msg.nh and true or nil
   peer.hs, peer.hd, peer.ht = msg.hs, tonumber(msg.hd), tonumber(msg.ht)
   peer.ra, peer.rt, peer.sa, peer.st2 = tonumber(msg.ra), tonumber(msg.rt), tonumber(msg.sa), tonumber(msg.st2)
   peer.lastHeard = ns.Now()
@@ -1073,6 +1076,12 @@ function ns.OnMessage(msg, peer)
     return
   end
   local peerKey = ns.ShortName(peer.name)
+
+  -- the neutral auction house list (Neutral.lua): its own messages, never mixed with this list
+  if msg.t == "NDATA" or msg.t == "NREQ" then
+    if ns.OnNeutralMessage then ns.OnNeutralMessage(msg, peer) end
+    return
+  end
 
   if msg.t == "HELLO" then
     NoteState(peer, msg, true)
