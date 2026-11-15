@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.4.5
+- Fixed "error in CHAT_MSG_SYSTEM ... attempt to index local 'text' (a secret string value)" in chat, e.g. on "has come online" lines. Forever passes some system messages as secret values that addons can't read; the whisper-failed check from 1.4.4 now skips those.
+
 ## 1.4.4
 - Fixed chat filling with "No player named 'X' is currently playing." when someone logged from one character to another mid-sync. Battle.net still reported their old character's name, so their messages kept that character showing online and it kept getting whispered sync data. The name the sender puts in the message now comes first.
 - If a whisper to a sync partner fails because they've logged off, AuctionatorSync now marks them offline right away, stops sending to them and hides those error lines. Before, it waited up to ~4 minutes of silence.

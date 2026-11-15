@@ -329,7 +329,10 @@ if type(ERR_CHAT_PLAYER_NOT_FOUND_S) == "string" then
 end
 
 local function WhisperFailed(text)
-  local name = notFound and type(text) == "string" and text:match(notFound)
+  -- Forever hands some system messages over as secret values: reading them errors
+  if not notFound or type(text) ~= "string" or (issecretvalue and issecretvalue(text)) then return nil end
+  local ok, name = pcall(string.match, text, notFound)
+  if not ok then return nil end
   local short = name and ns.ShortName(name)
   local t = short and whispered[short]
   if not t or GetTime() - t > WHISPER_ERROR_WINDOW then return nil end
