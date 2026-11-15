@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.6
+- Out-of-date notices only go to the player who's out of date. The chat line naming other players on an old version is gone; they still show as **needs update** in the /async online list, and the log notes it.
+- When someone with a newer AuctionatorSync is online (any realm or faction), chat tells you once per session that a newer version is out. If that version no longer syncs with yours, the notice says so in red: they ignore your copy until you update.
+- Every message now carries the oldest version the sender syncs with, so older copies from this one on can tell their player they're being ignored.
+
 ## 1.4.5
 - Fixed "error in CHAT_MSG_SYSTEM ... attempt to index local 'text' (a secret string value)" in chat, e.g. on "has come online" lines. Forever passes some system messages as secret values that addons can't read; the whisper-failed check from 1.4.4 now skips those.
 

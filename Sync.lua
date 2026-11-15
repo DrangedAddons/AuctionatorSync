@@ -1058,9 +1058,25 @@ local function DoneHosting(tkey)
   end
 end
 
-local newerSeen = false -- "a newer version is out" shown this session
+-- Telling this player they're out of date: only ever to them, never about anyone else.
+-- msg.v is the sender's version, msg.mv the oldest version the sender syncs with (1.4.6+).
+local newerSeen, blockedSeen = false, false
+local function CheckOwnVersion(msg)
+  if ns.VERSION == "?" or not msg.v then return end
+  if not blockedSeen and msg.mv and not ns.VersionAtLeast(ns.VERSION, msg.mv) then
+    blockedSeen, newerSeen = true, true
+    ns.Print("|cffff5555Your AuctionatorSync (v%s) is too old to sync with players on v%s - they ignore it until "
+      .. "you update to v%s or newer. Update it in the DrangedAddons manager.|r", ns.VERSION, tostring(msg.v),
+      tostring(msg.mv))
+  elseif not newerSeen and not ns.VersionAtLeast(ns.VERSION, msg.v) then
+    newerSeen = true
+    ns.Print("|cffffd100A newer AuctionatorSync (v%s) is out - you have v%s. Update it in the DrangedAddons manager.|r",
+      tostring(msg.v), ns.VERSION)
+  end
+end
 
 function ns.OnMessage(msg, peer)
+  CheckOwnVersion(msg) -- anyone with the addon counts, whatever their realm or faction
   local r = Realm()
   if not r or msg.r ~= ns.RealmKey() then
     if not peer.otherRealm then
@@ -1070,19 +1086,13 @@ function ns.OnMessage(msg, peer)
     return
   end
   peer.otherRealm = nil
-  if not newerSeen and msg.v and ns.VERSION ~= "?" and not ns.VersionAtLeast(ns.VERSION, msg.v) then
-    newerSeen = true
-    ns.Print("|cffffd100A newer AuctionatorSync (v%s) is out - you have v%s. Update it in the DrangedAddons manager.|r",
-      tostring(msg.v), ns.VERSION)
-  end
   if not Compatible(peer) then
-    -- too old: nothing of theirs is used (older than 1.4.0 mixes neutral AH prices in)
+    -- too old: nothing of theirs is used (older than 1.4.0 mixes neutral AH prices in). Only the
+    -- log and the online list's "needs update" say so; their own copy tells them (CheckOwnVersion).
     if not peer.warned then
       peer.warned = true
       ns.Log("%s is on v%s, which can't sync with v%s - they need to update",
         peer.name, tostring(msg.v), ns.VERSION)
-      ns.Print("|cffff9966%s has an old AuctionatorSync (v%s) and can't sync until they update to %s or newer.|r",
-        peer.name, tostring(msg.v), ns.MIN_VERSION)
     end
     return
   end

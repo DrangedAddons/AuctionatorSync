@@ -123,6 +123,7 @@ end
 function ns.Send(target, msg, prio, id, onSent)
   if not target then return end
   msg.v = ns.VERSION
+  msg.mv = ns.MIN_VERSION -- so an older copy can tell its player it's being ignored
   msg.p = ns.PROTOCOL
   msg.sid = ns.SESSION
   msg.n = UnitName("player") -- Battle.net doesn't always give the receiver our character name
