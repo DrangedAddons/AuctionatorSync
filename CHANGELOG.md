@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.4.7
+- The hidden AuctionatorSync channel no longer takes /1. When it joins before General, Trade and the rest, it now moves itself after every channel you chat in (the same as dragging it down in Chat Settings), so General stays /1, Trade /2 and so on. Other addons' hidden channels are left where they are.
+
 ## 1.4.6
 - Out-of-date notices only go to the player who's out of date. The chat line naming other players on an old version is gone; they still show as **needs update** in the /async online list, and the log notes it.
 - When someone with a newer AuctionatorSync is online (any realm or faction), chat tells you once per session that a newer version is out. If that version no longer syncs with yours, the notice says so in red: they ignore your copy until you update.

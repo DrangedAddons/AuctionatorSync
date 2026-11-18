@@ -30,6 +30,62 @@ local function HideChannel()
   end
 end
 
+-- Keep our channel numbered after every channel people chat in (General, Trade, Services, custom
+-- channels shown in a chat window), so those keep /1, /2, /3. A new channel takes the lowest free
+-- number, so joining before General does takes /1. Moved with the same swap as dragging channels
+-- in Chat Settings. Hidden custom channels (other addons' own) are left alone, so two addons doing
+-- this can't swap back and forth; a budget caps it anyway.
+local REORDER_SECONDS, MAX_SWAPS = 90, 12
+local reorderUntil, swapsLeft = 0, 0
+
+local function ShownChannels()
+  local shown = {}
+  for i = 1, NUM_CHAT_WINDOWS or 10 do
+    local list = { GetChatWindowChannels(i) } -- name, zone, name, zone...
+    for j = 1, #list, 2 do
+      if type(list[j]) == "string" then shown[list[j]:lower()] = true end
+    end
+  end
+  return shown
+end
+
+local function ChatChannelNumbers()
+  local out = {}
+  if not (GetNumDisplayChannels and GetChannelDisplayInfo) then return out end
+  local shown = ShownChannels()
+  for i = 1, GetNumDisplayChannels() or 0 do
+    local name, header, _, number, _, _, category = GetChannelDisplayInfo(i)
+    local chat = category == "CHANNEL_CATEGORY_WORLD"
+      or (category == "CHANNEL_CATEGORY_CUSTOM" and type(name) == "string" and shown[name:lower()])
+    if not header and type(number) == "number" and number > 0 and chat then out[#out + 1] = number end
+  end
+  table.sort(out)
+  return out
+end
+
+local function KeepChannelLast()
+  local swap = C_ChatInfo and C_ChatInfo.SwapChatChannelsByChannelIndex
+  local ours = GetChannelName(CHANNEL_NAME)
+  if not swap or not ours or ours == 0 then return end
+  local moved = false
+  for _, n in ipairs(ChatChannelNumbers()) do
+    if n > ours then
+      if swapsLeft <= 0 or not pcall(swap, ours, n) then break end
+      swapsLeft = swapsLeft - 1
+      ours, moved = n, true
+    end
+  end
+  if moved then
+    ns.channelId = GetChannelName(CHANNEL_NAME)
+    ns.Detail("moved the hidden channel to #%s, after the chat channels", tostring(ns.channelId))
+  end
+end
+
+-- the game's own channels often join a few seconds after ours: keep moving past them for a while
+ns.On("CHANNEL_UI_UPDATE", function()
+  if GetTime() < reorderUntil then pcall(KeepChannelLast) end
+end)
+
 function ns.JoinChannel()
   local id = GetChannelName(CHANNEL_NAME)
   if not id or id == 0 then
@@ -37,8 +93,13 @@ function ns.JoinChannel()
     id = GetChannelName(CHANNEL_NAME)
   end
   if id and id > 0 then
-    if ns.channelId ~= id then ns.Detail("joined the hidden AuctionatorSync channel (#%d)", id) end
-    ns.channelId = id
+    if ns.channelId ~= id then
+      ns.Detail("joined the hidden AuctionatorSync channel (#%d)", id)
+      -- new to it (or it moved): put it last
+      reorderUntil, swapsLeft = GetTime() + REORDER_SECONDS, MAX_SWAPS
+      ns.channelId = id
+      pcall(KeepChannelLast)
+    end
     HideChannel()
   else
     ns.channelId = nil
@@ -187,6 +248,11 @@ function ns.Broadcast(msg, prio, discover, onSent)
         break
       end
     end
+  end
+  -- its number can change (moved last, or dragged in Chat Settings): look it up each time
+  if ns.channelId then
+    local cid = GetChannelName(CHANNEL_NAME)
+    ns.channelId = (cid and cid > 0) and cid or nil
   end
   if ns.channelId and needChannel then
     ns.Send({ kind = "CHANNEL", channel = ns.channelId }, msg, prio, id, Sent)
