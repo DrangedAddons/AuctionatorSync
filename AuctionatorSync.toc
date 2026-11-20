@@ -5,6 +5,10 @@
 ## Version: 1.4.7
 ## Dependencies: Auctionator
 ## X-DrangedAddons-Games: _forever_
+## X-DrangedHub-Frame: AuctionatorSyncFrame
+## X-DrangedHub-Open: /async
+## X-DrangedHub-Crop: 34
+## X-DrangedHub-Actions: Price list=/ah
 ## SavedVariables: AuctionatorSyncDB
 ## IconTexture: Interface\AddOns\AuctionatorSync\Images\Icon
 ## AddonCompartmentFunc: AuctionatorSync_OnCompartmentClick
