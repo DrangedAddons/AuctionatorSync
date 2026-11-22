@@ -405,7 +405,7 @@ local function SideEntries()
         local bySize = c.slots and c.slots[sub]
         local sizes = {}
         for n in pairs(bySize or {}) do sizes[#sizes + 1] = n end
-        table.sort(sizes)
+        table.sort(sizes, function(a, b) return a > b end) -- biggest bags first
         local subKey = classID .. ":" .. sub
         local subExpanded = #sizes > 0 and ns.db.priceExpanded[subKey]
         entries[#entries + 1] = { label = (SubClassInfo and SubClassInfo(classID, sub)) or ("Type " .. sub),

@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.5.1
+- Bag slot counts in the /ah category browser are listed biggest first.
+
 ## 1.5.0
 - The /ah category browser goes one level deeper for bags and quivers: open Container > Bag (or Soul Bag, Herb Bag, Quiver...) to list its slot counts, e.g. "18 slots", and click one to see only those. Slot counts come from Wowhead Forever's bag and quiver lists; a bag that isn't on them is read from its tooltip.
 
