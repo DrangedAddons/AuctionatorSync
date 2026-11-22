@@ -195,6 +195,8 @@ local function BuildRows()
         quality = known[2], level = known[3] or 0, price = e[2], seen = e[3], avail = e[4],
         icon = icon, classID = classID or -1, subClassID = subClassID or -1,
         slot = ns.SlotOf(equipLoc),
+        -- bags and quivers: their slot count, the category browser's third level
+        bagSlots = (classID == 1 or classID == 11) and ns.BagSlotsOf(id) or nil,
       }
     end
   end
@@ -206,7 +208,7 @@ end
 
 local win
 local ROW_H, SIDE_W, SIDE_ROW_H = 20, 180, 18
-state = { classID = nil, subClassID = nil, search = "", favorites = false, neutral = false }
+state = { classID = nil, subClassID = nil, slots = nil, search = "", favorites = false, neutral = false }
 
 -- Favorites: price keys starred in the list, saved account-wide in ns.db.favorites.
 local STAR = "Interface\\TargetingFrame\\UI-RaidTargetingIcon_1"
@@ -347,6 +349,7 @@ local function Visible()
     if (not state.favorites or favs[row.key])
       and (not state.classID or row.classID == state.classID)
       and (not state.subClassID or row.subClassID == state.subClassID)
+      and (not state.slots or row.bagSlots == state.slots)
       and (search == "" or row.lname:find(search, 1, true))
       and PassesFilters(row, f) then
       list[#list + 1] = row
@@ -373,6 +376,12 @@ local function SideEntries()
       c.subOrder[#c.subOrder + 1] = row.subClassID
     end
     c.subs[row.subClassID] = c.subs[row.subClassID] + 1
+    if row.bagSlots then
+      c.slots = c.slots or {}
+      local bySize = c.slots[row.subClassID] or {}
+      c.slots[row.subClassID] = bySize
+      bySize[row.bagSlots] = (bySize[row.bagSlots] or 0) + 1
+    end
   end
   table.sort(order)
   local favs, favCount = Favorites(), 0
@@ -392,8 +401,22 @@ local function SideEntries()
     if expanded then
       table.sort(c.subOrder)
       for _, sub in ipairs(c.subOrder) do
+        -- bag and quiver types open one level further: one line per slot count
+        local bySize = c.slots and c.slots[sub]
+        local sizes = {}
+        for n in pairs(bySize or {}) do sizes[#sizes + 1] = n end
+        table.sort(sizes)
+        local subKey = classID .. ":" .. sub
+        local subExpanded = #sizes > 0 and ns.db.priceExpanded[subKey]
         entries[#entries + 1] = { label = (SubClassInfo and SubClassInfo(classID, sub)) or ("Type " .. sub),
-          count = c.subs[sub], classID = classID, subClassID = sub, indent = true }
+          count = c.subs[sub], classID = classID, subClassID = sub, indent = 1,
+          expandable = #sizes > 0, expanded = subExpanded, expandKey = subKey }
+        if subExpanded then
+          for _, n in ipairs(sizes) do
+            entries[#entries + 1] = { label = n .. " slots", count = bySize[n], classID = classID,
+              subClassID = sub, slots = n, indent = 2 }
+          end
+        end
       end
     end
   end
@@ -419,10 +442,11 @@ local function RefreshSide()
         selected = e.favorites and true or false
       else
         selected = (e.all and not state.classID)
-          or (e.classID ~= nil and e.classID == state.classID and e.subClassID == state.subClassID)
+          or (e.classID ~= nil and e.classID == state.classID and e.subClassID == state.subClassID
+            and e.slots == state.slots)
       end
       local mark = e.expandable and (e.expanded and "|cffffd100-|r " or "|cffffd100+|r ") or "  "
-      b.text:SetText((e.indent and "      " or "") .. mark .. e.label .. "  |cff999999" .. ns.Num(e.count) .. "|r")
+      b.text:SetText(string.rep("      ", e.indent or 0) .. mark .. e.label .. "  |cff999999" .. ns.Num(e.count) .. "|r")
       b.text:SetTextColor(selected and 1 or 0.9, selected and 0.82 or 0.9, selected and 0 or 0.9)
       b.sel:SetShown(selected)
       b.entry = e
@@ -522,7 +546,7 @@ Refresh = function(rebuild)
     for _, row in ipairs(allRows) do
       if favs[row.key] then any = true; break end
     end
-    state.favorites, state.classID, state.subClassID = any, nil, nil
+    state.favorites, state.classID, state.subClassID, state.slots = any, nil, nil, nil
     win.list.offset, win.side.offset = 0, 0
   end
   visibleDirty, sideDirty = true, true -- search, category, sort or prices may have changed
@@ -1038,7 +1062,7 @@ local function Build()
   clear:SetPoint("TOPLEFT", 12, -37)
   clear:SetText("Clear filters")
   clear:SetScript("OnClick", function()
-    state.classID, state.subClassID, state.favorites = nil, nil, false
+    state.classID, state.subClassID, state.slots, state.favorites = nil, nil, nil, false
     ns.db.priceFilters = { rarity = {} }
     search:SetText("")
     search:ClearFocus()
@@ -1083,15 +1107,23 @@ local function Build()
       if not e then return end
       state.favorites = e.favorites and true or false
       if e.all or e.favorites then
-        state.classID, state.subClassID = nil, nil
+        state.classID, state.subClassID, state.slots = nil, nil, nil
+      elseif e.slots then
+        state.classID, state.subClassID, state.slots = e.classID, e.subClassID, e.slots
       elseif e.subClassID then
-        state.classID, state.subClassID = e.classID, e.subClassID
+        -- a bag type: select it, and open/close its slot counts (like a category's types)
+        if state.classID == e.classID and state.subClassID == e.subClassID and not state.slots and e.expandable then
+          ns.db.priceExpanded[e.expandKey] = not ns.db.priceExpanded[e.expandKey]
+        else
+          state.classID, state.subClassID, state.slots = e.classID, e.subClassID, nil
+          if e.expandable then ns.db.priceExpanded[e.expandKey] = true end
+        end
       else
         -- a category: select it, and open/close its subcategories
         if state.classID == e.classID and not state.subClassID and e.expandable then
           ns.db.priceExpanded[e.classID] = not ns.db.priceExpanded[e.classID]
         else
-          state.classID, state.subClassID = e.classID, nil
+          state.classID, state.subClassID, state.slots = e.classID, nil, nil
           if e.expandable then ns.db.priceExpanded[e.classID] = true end
         end
       end

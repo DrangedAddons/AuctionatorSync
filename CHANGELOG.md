@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.5.0
+- The /ah category browser goes one level deeper for bags and quivers: open Container > Bag (or Soul Bag, Herb Bag, Quiver...) to list its slot counts, e.g. "18 slots", and click one to see only those. Slot counts come from Wowhead Forever's bag and quiver lists; a bag that isn't on them is read from its tooltip.
+
 ## 1.4.7
 - The hidden AuctionatorSync channel no longer takes /1. When it joins before General, Trade and the rest, it now moves itself after every channel you chat in (the same as dragging it down in Chat Settings), so General stays /1, Trade /2 and so on. Other addons' hidden channels are left where they are.
 
