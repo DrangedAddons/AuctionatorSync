@@ -2,7 +2,9 @@
 
 ## 1.5.2
 - Fixed suffix gear showing twice in the Price List, once as a number ("Hyperion Legplates 6") and once by name ("Hyperion Legplates of the Whale"). Auctionator on Forever saves these items under a numbered suffix, and older copies saved the suffix name. Auctionator converted its own list once, but syncing kept bringing the old names back, so about 40,000 of a 91,000-price list were stale copies that Auctionator never reads. At login they're merged into Auctionator's own entries (newer price wins, price history from both kept), favorites move with them, and old names that come in from a sync are stored the right way.
+- Hovering suffix gear in the Price List shows that item's own tooltip ("Glorious Legplates of the Falcon" with its stats and Auctionator price), and shift-click links it, instead of the plain item.
 - Suffix gear is listed by its real name ("of the Whale", "of the Knight") instead of Auctionator's suffix number.
+- Handshakes send far fewer prices. The list is now split into 4,096 sections instead of 256, so one changed price only sends the ~20 prices in its section along with it, not ~350. The compare stays as small as before: it still starts with 256 sums, and when only a few of those differ the answer says exactly which of their 16 sections do, in the same reply. When most of the list differs (a first sync), whole groups go as before.
 - **Everyone needs 1.5.2 to sync.** 1.5.1 keeps the old copies, so its list could never match.
 
 ## 1.5.1

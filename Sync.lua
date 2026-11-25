@@ -43,7 +43,10 @@ local COMPARE_TIMEOUT = 45  -- the compare step is two small messages: no answer
 local STALL_TIMEOUT = 60    -- a handshake piece with no prices moving either way for this long is dropped
 local BENCH_TIME = 600      -- a host dropped for that is not picked again for this long (10 minutes)
 local WAIT_LIMIT = 60       -- looking for a host longer than this: carry on alone and retry later
-local SECTIONS = 256
+local SECTIONS = 4096       -- fine sections: one changed price sends ~22 others along, not ~350
+local GROUPS = 256          -- the compare's first step: section s is in group s % GROUPS
+local PER_GROUP = SECTIONS / GROUPS
+local NARROW_MAX = 32       -- groups differing at most this many: the host adds their section sums
 local TS_KEEP_DAYS = 60
 local TWO32 = 4294967296
 
@@ -121,6 +124,29 @@ function ns.CanonicalKey(key)
   return index and ("gr:" .. id .. ":" .. index) or key
 end
 
+-- The game's item string for a price key. Suffix gear gets the bonus ID behind its suffix (the
+-- link shape Auctionator itself uses to name suffixes), so tooltips, Auctionator's price line
+-- and chat links are for "of the Whale", not the plain item.
+local bonusFor -- suffix index -> bonus ID
+function ns.ItemString(key)
+  key = tostring(key)
+  local id, index = key:match("^gr:(%d+):(%d+)$")
+  if not id then
+    local plain = ns.ItemIDFromKey(key)
+    return plain and ("item:" .. plain) or nil
+  end
+  local u = Auctionator and Auctionator.Utilities
+  if not bonusFor and u and type(u.SuffixBonusIDs) == "table" then
+    bonusFor = {}
+    for bonus, i in pairs(u.SuffixBonusIDs) do
+      if not bonusFor[i] or bonus < bonusFor[i] then bonusFor[i] = bonus end
+    end
+  end
+  local bonus = bonusFor and bonusFor[tonumber(index)]
+  if not bonus then return "item:" .. id end
+  return "item:" .. id .. string.rep(":", 12) .. "1:" .. bonus
+end
+
 -- The suffix a key names ("of the Whale"), or nil for anything that isn't suffix gear.
 function ns.SuffixName(key)
   local suffix = tostring(key):match("^gr:%d+:(.+)$")
@@ -161,7 +187,8 @@ function ns.LastChange()
 end
 
 ----------------------------------------------------------------------------------------------
--- Fingerprint: 256 sections, each the sum (mod 2^32) of hash(item, price) for its items.
+-- Fingerprint: 4096 sections, each the sum (mod 2^32) of hash(item, price) for its items.
+-- The compare sends 256 group sums (16 sections each) first; see SUM / NEED.
 
 local sections, itemCount = {}, 0
 local newestTs = 0 -- when the newest price in this list was seen (shared as nt)
@@ -188,6 +215,60 @@ local function Track(key, oldPrice, newPrice)
     sections[s] = (sections[s] + Hash(key .. ":" .. newPrice)) % TWO32
     itemCount = itemCount + 1
   end
+end
+
+-- The 256 group sums (section s counts toward group s % 256), as sent in SUM.
+local function GroupSums()
+  local b = {}
+  for g = 0, GROUPS - 1 do b[g + 1] = 0 end
+  for i = 0, SECTIONS - 1 do
+    local g = i % GROUPS + 1
+    b[g] = (b[g] + sections[i]) % TWO32
+  end
+  return b
+end
+
+-- The sections of group g: g, g + 256, g + 512, ...
+local function GroupSections(g)
+  local list = {}
+  for k = 0, PER_GROUP - 1 do list[#list + 1] = g + k * GROUPS end
+  return list
+end
+
+-- A set of sections on the wire: one number per group, group * 65536 + a 16-bit mask of which
+-- of its sections are in it. At most 256 numbers, however many sections.
+local function PackSections(list)
+  local masks = {}
+  for _, s in ipairs(list) do
+    local g, k = s % GROUPS, floor(s / GROUPS)
+    local m = masks[g] or 0
+    if floor(m / 2 ^ k) % 2 == 0 then m = m + 2 ^ k end
+    masks[g] = m
+  end
+  local out = {}
+  for g, m in pairs(masks) do out[#out + 1] = g * 65536 + m end
+  table.sort(out)
+  return out
+end
+
+local function UnpackSections(packed)
+  local set, n = {}, 0
+  if type(packed) ~= "table" then return set, n end
+  for _, v in ipairs(packed) do
+    v = tonumber(v)
+    if v then
+      local g, m = floor(v / 65536), v % 65536
+      if g >= 0 and g < GROUPS then
+        for k = 0, PER_GROUP - 1 do
+          if floor(m / 2 ^ k) % 2 == 1 then
+            set[g + k * GROUPS] = true
+            n = n + 1
+          end
+        end
+      end
+    end
+  end
+  return set, n
 end
 
 function ns.Fingerprint()
@@ -714,7 +795,7 @@ end
 --      with everyone else.
 --   4. A host that goes quiet has its piece moved to another host.
 
-local SECTIONS_PER_HOST = 16 -- each host gets at least this many sections (smaller isn't worth it)
+local SECTIONS_PER_HOST = 64 -- each host gets at least this many sections (smaller isn't worth it)
 local SWARM_MAX = 6          -- never more hosts than this (past it the newcomer's own sending dominates)
 
 local join -- { verbose, probe, pieces = { [id] = piece }, bad = { [peer] = true }, changed, nextId }
@@ -920,7 +1001,7 @@ SendPiece = function(piece)
     ns.Plural(#items, "price"), #piece.list,
     join.since and string.format(" (only those seen since %s; %s in those sections)", date("%H:%M", join.since), ns.Num(all)) or "")
   piece.up = ns.SendEntries(ns.ReplyTarget(piece.host), items, "BULK", "join",
-    { bk = piece.list, pc = piece.id, sn = join.since })
+    { bs = PackSections(piece.list), pc = piece.id, sn = join.since })
   piece.lastProgress = ns.Now()
   UpdateProgress()
 end
@@ -982,8 +1063,7 @@ local function StartHandshake(verbose, probe, full)
   SetState("syncing", probe.name)
   ns.syncProgress = 0
   ns.Log("%s is syncing with %s%s", ns.MyName(), probe.name, since and "" or " (full)")
-  local b = {}
-  for i = 0, SECTIONS - 1 do b[i + 1] = sections[i] end
+  local b = GroupSums()
   ns.syncPhase = "comparing - waiting for " .. probe.name
   ns.syncStep, ns.syncDone, ns.syncTotal = "comparing", nil, nil
   ns.Send(ns.ReplyTarget(probe), { t = "SUM", r = ns.RealmKey(), b = b }, "ALERT", nil, function()
@@ -1215,13 +1295,23 @@ function ns.OnMessage(msg, peer)
     NoteState(peer, msg, false)
 
   elseif msg.t == "SUM" then
-    -- Someone is comparing with us: which sections differ?
-    local diff = {}
-    for i = 0, SECTIONS - 1 do
-      if tonumber(type(msg.b) == "table" and msg.b[i + 1]) ~= sections[i] then diff[#diff + 1] = i end
+    -- Someone is comparing with us: which groups of sections differ? With only a few, add our
+    -- sums for each of their 16 sections so they can tell exactly which (no extra round trip,
+    -- and the answer stays a few messages long).
+    local mine, diff = GroupSums(), {}
+    for g = 0, GROUPS - 1 do
+      if tonumber(type(msg.b) == "table" and msg.b[g + 1]) ~= mine[g + 1] then diff[#diff + 1] = g end
     end
-    ns.Detail("%s is comparing with %s: %d of %d sections differ", peer.name, ns.MyName(), #diff, SECTIONS)
-    ns.Send(ns.ReplyTarget(peer), { t = "NEED", r = ns.RealmKey(), bk = diff }, "ALERT")
+    local need = { t = "NEED", r = ns.RealmKey(), bk = diff }
+    if #diff > 0 and #diff <= NARROW_MAX then
+      local ss = {}
+      for _, g in ipairs(diff) do
+        for _, sec in ipairs(GroupSections(g)) do ss[#ss + 1] = sections[sec] end
+      end
+      need.ss = ss
+    end
+    ns.Detail("%s is comparing with %s: %d of %d groups differ", peer.name, ns.MyName(), #diff, GROUPS)
+    ns.Send(ns.ReplyTarget(peer), need, "ALERT")
 
   elseif msg.t == "CANCEL" then
     -- the newcomer dropped us for this piece: stop sending it and stop hosting it
@@ -1249,8 +1339,23 @@ function ns.OnMessage(msg, peer)
       FinishJoin(join.verbose, 0, peer.name)
       return
     end
-    ns.Detail("%s answered: %d of %d sections differ", peer.name, #bk, SECTIONS)
-    StartPieces(bk)
+    -- the differing sections: exactly, where they sent their section sums, else whole groups
+    local ss = type(msg.ss) == "table" and #msg.ss == #bk * PER_GROUP and msg.ss or nil
+    local list = {}
+    for i, g in ipairs(bk) do
+      g = tonumber(g)
+      if g and g >= 0 and g < GROUPS then
+        for k, sec in ipairs(GroupSections(g)) do
+          if not ss or tonumber(ss[(i - 1) * PER_GROUP + k]) ~= sections[sec] then list[#list + 1] = sec end
+        end
+      end
+    end
+    ns.Detail("%s answered: %d of %d groups differ, %d of %d sections", peer.name, #bk, GROUPS, #list, SECTIONS)
+    if #list == 0 then
+      FinishJoin(join.verbose, 0, peer.name)
+      return
+    end
+    StartPieces(list)
 
   elseif msg.t == "DATA" then
     local e, base = msg.e, tonumber(msg.b) or 0
@@ -1263,12 +1368,10 @@ function ns.OnMessage(msg, peer)
       transfers[tkey] = tr
       if tr.kind ~= "join" then ns.AnnounceState() end -- now "receiving updates"
       if tr.kind == "join" then
-        local set = {}
-        for _, s in ipairs(type(msg.bk) == "table" and msg.bk or {}) do set[tonumber(s)] = true end
+        local set, n = UnpackSections(msg.bs)
         tr.sections, tr.pc, tr.since = set, msg.pc, tonumber(msg.sn)
         hosting[tkey] = true
-        ns.Detail("%s is handshaking with %s (%d sections)", peer.name, ns.MyName(),
-          type(msg.bk) == "table" and #msg.bk or 0)
+        ns.Detail("%s is handshaking with %s (%d sections)", peer.name, ns.MyName(), n)
         ns.AnnounceState()
       end
     end

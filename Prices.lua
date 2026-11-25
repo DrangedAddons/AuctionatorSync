@@ -560,12 +560,13 @@ end
 -- link-watcher (OnInsertLink, below) from copying it into the /ah search.
 local InsertLinkFn = (ChatFrameUtil and ChatFrameUtil.InsertLink) or ChatEdit_InsertLink
 local OpenChatFn = (ChatFrameUtil and ChatFrameUtil.OpenChat) or ChatFrame_OpenChat
-LinkClick = function(id, tries)
-  local _, link = GetInfo(id)
+LinkClick = function(row, tries)
+  -- suffix gear links as itself ("of the Whale"), not the plain item
+  local _, link = GetInfo(ns.ItemString(row.key) or row.id)
   if not link then
     -- not in the item cache yet: ask for it and finish the click when it arrives
     if (tries or 0) < 1 and Item and Item.CreateFromItemID then
-      Item:CreateFromItemID(id):ContinueOnItemLoad(function() LinkClick(id, (tries or 0) + 1) end)
+      Item:CreateFromItemID(row.id):ContinueOnItemLoad(function() LinkClick(row, (tries or 0) + 1) end)
     end
     return
   end
@@ -1243,8 +1244,10 @@ local function Build()
     l:SetScript("OnEnter", function(self)
       if not self.row then return end
       GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-      local _, link = GetInfo(self.row.id)
-      if link then GameTooltip:SetHyperlink(link) else GameTooltip:SetItemByID(self.row.id) end
+      -- the suffix version for suffix gear: its own name, stats and Auctionator price
+      local itemString = ns.ItemString(self.row.key) or ("item:" .. self.row.id)
+      local _, link = GetInfo(itemString)
+      GameTooltip:SetHyperlink(link or itemString)
       GameTooltip:AddLine("Shift-click: link it in chat", 0.6, 0.6, 0.6)
       GameTooltip:AddLine(Favorites()[self.row.key] and "Right-click: remove from favorites"
         or "Right-click: add to favorites", 0.6, 0.6, 0.6)
@@ -1260,7 +1263,7 @@ local function Build()
         end
         return
       end
-      if self.row then LinkClick(self.row.id) end
+      if self.row then LinkClick(self.row) end
     end)
     list.lines[i] = l
   end
