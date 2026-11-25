@@ -14,6 +14,26 @@ local CATCHUP_RETRY = 120  -- no one to ask yet: try again this often
 
 ns.atNeutralAH = false
 
+-- Text suffix keys ("gr:<item>:of the Whale") folded into Auctionator's numeric ones, newest
+-- wins, once a session (see ns.CanonicalKey in Sync.lua).
+local folded = {}
+local function FoldSuffixKeys(r)
+  if folded[r] then return end
+  folded[r] = true
+  local moves = {}
+  for key in pairs(r.items) do
+    local canon = ns.CanonicalKey(key)
+    if canon ~= tostring(key) then moves[key] = canon end
+  end
+  for old, canon in pairs(moves) do
+    local from, into = r.items[old], r.items[canon]
+    if type(from) == "table" and (type(into) ~= "table" or (from.t or 0) > (into.t or 0)) then
+      r.items[canon] = from
+    end
+    r.items[old] = nil
+  end
+end
+
 -- { items = { [key] = { p = price, t = seen, a = available } }, synced = ts, shared = ts }
 local function List()
   local realm = ns.RealmKey()
@@ -24,6 +44,7 @@ local function List()
     r = { items = {}, synced = 0, shared = 0 }
     ns.store.neutral[realm] = r
   end
+  FoldSuffixKeys(r)
   return r
 end
 
@@ -252,7 +273,7 @@ function ns.OnNeutralMessage(msg, peer)
   local tr = incoming[tkey] or { changed = 0, received = 0 }
   incoming[tkey] = tr
   for i = 1, #e - 3, 4 do
-    local key, price = tostring(e[i]), tonumber(e[i + 1])
+    local key, price = ns.CanonicalKey(e[i]), tonumber(e[i + 1])
     local avail, ts = tonumber(e[i + 2]), base + (tonumber(e[i + 3]) or 0)
     tr.received = tr.received + 1
     if price and price > 0 then

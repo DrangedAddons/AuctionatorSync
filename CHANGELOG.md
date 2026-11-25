@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.2
+- Fixed suffix gear showing twice in the Price List, once as a number ("Hyperion Legplates 6") and once by name ("Hyperion Legplates of the Whale"). Auctionator on Forever saves these items under a numbered suffix, and older copies saved the suffix name. Auctionator converted its own list once, but syncing kept bringing the old names back, so about 40,000 of a 91,000-price list were stale copies that Auctionator never reads. At login they're merged into Auctionator's own entries (newer price wins, price history from both kept), favorites move with them, and old names that come in from a sync are stored the right way.
+- Suffix gear is listed by its real name ("of the Whale", "of the Knight") instead of Auctionator's suffix number.
+- **Everyone needs 1.5.2 to sync.** 1.5.1 keeps the old copies, so its list could never match.
+
 ## 1.5.1
 - Bag slot counts in the /ah category browser are listed biggest first.
 

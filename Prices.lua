@@ -187,7 +187,7 @@ local function BuildRows()
     if known then
       local _, _, _, equipLoc, icon, classID, subClassID = GetInstant(id)
       local extra = key:match("^g:%d+:(%d+)")
-      local suffix = key:match("^gr:%d+:(.+)$")
+      local suffix = ns.SuffixName(key) -- "of the Whale", not Auctionator's index
       local name = known[1]
       if suffix then name = name .. " " .. suffix end
       rows[#rows + 1] = {

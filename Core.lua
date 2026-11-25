@@ -7,9 +7,10 @@ local GetMeta = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
 ns.VERSION = (GetMeta and GetMeta(addonName, "Version")) or "?"
 ns.PREFIX = "AucSync"
 ns.PROTOCOL = 4
--- The oldest version we sync with: 1.4.0 keeps neutral auction house prices apart. Older
--- versions would share Booty Bay / Gadgetzan / Everlook prices as normal ones.
-ns.MIN_VERSION = "1.4.0"
+-- The oldest version we sync with. 1.5.2 folds old text suffix keys ("gr:<item>:of the Whale")
+-- into Auctionator's numeric ones; 1.5.1 keeps both, so its list never matches and it would
+-- re-sync forever. (1.4.0 was the first to keep neutral auction house prices apart.)
+ns.MIN_VERSION = "1.5.2"
 
 -- "1.10.2" >= "1.4.0": compared number by number
 function ns.VersionAtLeast(v, min)

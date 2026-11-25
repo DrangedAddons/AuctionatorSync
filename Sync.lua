@@ -89,11 +89,46 @@ local function SeenAt(r, key, entry)
   return newest and (DayZero() + newest * 86400) or 0
 end
 
--- Auctionator keys: "12345" (item), "g:12345:<item level>" (gear), "gr:12345:<suffix>" (older
--- random-suffix gear, e.g. "of the Bear"), "p:..." (battle pet).
+-- Auctionator keys: "12345" (item), "g:12345:<item level>" (gear), "gr:12345:<suffix>"
+-- (random-suffix gear), "p:..." (battle pet).
 function ns.ItemIDFromKey(key)
   key = tostring(key)
   return tonumber(key:match("^(%d+)$") or key:match("^gr?:(%d+)"))
+end
+
+-- Random-suffix gear. Auctionator on Forever keys it "gr:<item>:<n>", n an index into
+-- Auctionator.Utilities.SuffixLabels (6 = "of the Whale"). Older copies wrote the suffix text,
+-- "gr:<item>:of the Whale". Auctionator converted its own list once, but synced prices kept
+-- bringing the text keys back, so every suffix item was listed twice.
+local function SuffixLabels()
+  local u = Auctionator and Auctionator.Utilities
+  local labels = u and u.SuffixLabels
+  if type(labels) == "table" and labels[1] then return labels end
+end
+
+local labelIndex -- suffix text -> its first index, the same pick as Auctionator's conversion
+function ns.CanonicalKey(key)
+  key = tostring(key)
+  local id, text = key:match("^gr:(%d+):(%D.*)$")
+  if not id then return key end
+  local labels = SuffixLabels()
+  if not labels then return key end
+  if not labelIndex then
+    labelIndex = {}
+    for i = #labels, 1, -1 do labelIndex[labels[i]] = i end
+  end
+  local index = labelIndex[text]
+  return index and ("gr:" .. id .. ":" .. index) or key
+end
+
+-- The suffix a key names ("of the Whale"), or nil for anything that isn't suffix gear.
+function ns.SuffixName(key)
+  local suffix = tostring(key):match("^gr:%d+:(.+)$")
+  if not suffix then return nil end
+  local index = tonumber(suffix)
+  if not index then return suffix end
+  local labels = SuffixLabels()
+  return labels and labels[index] or nil
 end
 
 -- For the Price List: every priced item as { key, price, seen at, available that day }.
@@ -194,12 +229,80 @@ local function OnLocalPrice(key, price, available)
   known[key] = price
 end
 
+-- Day tables (h, l, a): keep from's value for a day where better(from's, ours) says so.
+local function MergeDays(into, from, better)
+  if type(from) ~= "table" then return end
+  for day, v in pairs(from) do
+    if into[day] == nil or better(v, into[day]) then into[day] = v end
+  end
+end
+
+local function Higher(a, b) return a > b end
+local function Lower(a, b) return a < b end
+
+-- Fold text suffix keys into the numeric ones: the newer price wins (same time: the lower,
+-- as in Apply), and the day history of both is kept. Favorites move with them.
+local function FoldSuffixKeys(data, r)
+  if not SuffixLabels() then return 0 end
+  local moves = {}
+  for key in pairs(data) do
+    local canon = ns.CanonicalKey(key)
+    if canon ~= tostring(key) then moves[key] = canon end
+  end
+  local folded = 0
+  for old, canon in pairs(moves) do
+    local from, into = data[old], data[canon]
+    if type(from) == "table" and (from.m or 0) > 0 then
+      local tFrom = SeenAt(r, tostring(old), from)
+      if type(into) ~= "table" or not ((into.m or 0) > 0) then
+        data[canon] = from
+        r.ts[canon] = r.ts[tostring(old)] or r.ts[canon]
+      else
+        local tInto = SeenAt(r, canon, into)
+        if tFrom > tInto or (tFrom == tInto and from.m < into.m) then into.m = from.m end
+        into.h, into.l = into.h or {}, into.l or {}
+        MergeDays(into.h, from.h, Higher)
+        MergeDays(into.l, from.l, Lower)
+        if type(from.a) == "table" then
+          into.a = into.a or {}
+          MergeDays(into.a, from.a, Higher)
+        end
+        if r.ts[tostring(old)] or r.ts[canon] then r.ts[canon] = math.max(tFrom, tInto) end
+      end
+    end
+    data[old] = nil
+    r.ts[tostring(old)] = nil
+    folded = folded + 1
+  end
+  local favs = ns.db and ns.db.favorites
+  if type(favs) == "table" then
+    local renamed = {}
+    for key in pairs(favs) do
+      local canon = ns.CanonicalKey(key)
+      if canon ~= key then renamed[key] = canon end
+    end
+    for key, canon in pairs(renamed) do
+      favs[key] = nil
+      favs[canon] = true
+    end
+  end
+  return folded
+end
+
 -- Auctionator can rebuild its database object (e.g. when you clear it), so keep checking.
 function ns.HookAuctionator()
   local db = DB()
   if not db or db == hookedDB or type(db.SetPrice) ~= "function" then return end
   hookedDB = db
   wipe(known)
+  local r0 = Realm()
+  if type(db.db) == "table" and r0 then
+    local folded = FoldSuffixKeys(db.db, r0)
+    if folded > 0 then
+      ns.Log("%s merged %s saved under old suffix names into Auctionator's own", ns.MyName(),
+        ns.Plural(folded, "price"))
+    end
+  end
   if type(db.db) == "table" then
     for key, entry in pairs(db.db) do
       if type(entry) == "table" then known[key] = entry.m end
@@ -1174,7 +1277,8 @@ function ns.OnMessage(msg, peer)
     if piece and piece.host ~= peer then piece = nil end -- a late answer from a host we moved away from
     local force = piece and true or false
     for i = 1, #e - 3, 4 do
-      local key, price, avail = tostring(e[i]), tonumber(e[i + 1]), tonumber(e[i + 2])
+      -- a 1.5.1 copy can still send a text suffix key: store it under Auctionator's own
+      local key, price, avail = ns.CanonicalKey(e[i]), tonumber(e[i + 1]), tonumber(e[i + 2])
       local ts = base + (tonumber(e[i + 3]) or 0)
       tr.received = tr.received + 1
       if Apply(r, key, price, avail, ts, force) == "changed" then
