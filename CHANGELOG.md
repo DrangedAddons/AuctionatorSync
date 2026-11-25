@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.5.3
+Handshakes that don't fail, and don't cost frames.
+- **A slow sync is never dropped.** Whether the other player is still there is now judged by every piece of every message crossing between you, not by whole 500-price batches finishing. A busy host that takes minutes per batch is left to finish; only real silence (nothing at all for 2 minutes), logging off or reloading moves on.
+- **Failures resume instead of starting over.** A handshake goes in pieces of about 1,500 prices. Each host works one piece at a time and takes the next when it's done, so a slow host simply does fewer. If a host drops out, only its unfinished piece moves to another host. If nobody is left, everything that arrived is kept and the next try only fetches what's still different.
+- **No more 10-minute bench.** A host that goes silent sits out 2 minutes, then 4, 8, up to 10 if it keeps happening, and is forgiven once it finishes a piece. Retries back off too (20 s, 1, 3, 5 min) and keep going until a sync finishes; a half-finished list is never taken as the master list.
+- **No login freeze on big lists.** Reading Auctionator's prices at login used to take one long frame (about 140 ms for 51,000 prices). It's now spread over frames at about 4 ms each, and syncing starts when it's done.
+- **Sending a piece touches only its own prices.** Each section keeps its list of prices, so picking the prices for a piece or a reply no longer walks the whole list.
+- The host's answer goes out before it shares what you brought with everyone else, and the sharing goes at the lowest priority.
+- A message the game refused part of is sent again instead of leaving the other side with a hole.
+- Fewer "progress" status messages during transfers (every 30 s instead of 10), leaving more of the send budget for prices.
+- The old-suffix-name merge from 1.5.2 runs once per realm instead of every login.
+
 ## 1.5.2
 - Fixed suffix gear showing twice in the Price List, once as a number ("Hyperion Legplates 6") and once by name ("Hyperion Legplates of the Whale"). Auctionator on Forever saves these items under a numbered suffix, and older copies saved the suffix name. Auctionator converted its own list once, but syncing kept bringing the old names back, so about 40,000 of a 91,000-price list were stale copies that Auctionator never reads. At login they're merged into Auctionator's own entries (newer price wins, price history from both kept), favorites move with them, and old names that come in from a sync are stored the right way.
 - Hovering suffix gear in the Price List shows that item's own tooltip ("Glorious Legplates of the Falcon" with its stats and Auctionator price), and shift-click links it, instead of the plain item.

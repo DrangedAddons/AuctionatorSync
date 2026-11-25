@@ -179,8 +179,25 @@ local function RouteName(target)
   return (target.name or tostring(target.id)) .. (target.kind == "BN" and " (Battle.net)" or "")
 end
 
+-- Liveness, chunk by chunk. A big message takes many seconds to cross, so "nothing finished
+-- lately" isn't "nothing moving": every chunk to or from a player counts.
+--   heardAny[short]    last chunk from them on any route (guild/channel too)
+--   heardDirect[short] last chunk from them by whisper / Battle.net (handshake traffic)
+--   sentDirect[short]  last chunk of ours to them by whisper / Battle.net that actually went out
+local heardAny, heardDirect, sentDirect = {}, {}, {}
+function ns.HeardFrom(peer, directOnly)
+  local short = peer and peer.name and ns.ShortName(peer.name)
+  if not short then return 0 end
+  return (directOnly and heardDirect[short] or heardAny[short]) or 0
+end
+function ns.SentTo(peer)
+  local short = peer and peer.name and ns.ShortName(peer.name)
+  return short and sentDirect[short] or 0
+end
+
 -- target = { kind = "GUILD" | "CHANNEL" } | { kind = "WHISPER", name } | { kind = "BN", id, name }
--- onSent: called once the message's last chunk has actually gone out (the throttle queues them).
+-- onSent(ok): called once the message's last chunk has gone out (the throttle queues them).
+-- ok is false if the game refused any chunk: the receiver can't rebuild it, so send it again.
 function ns.Send(target, msg, prio, id, onSent)
   if not target then return end
   msg.v = ns.VERSION
@@ -195,10 +212,20 @@ function ns.Send(target, msg, prio, id, onSent)
   -- header "<id>:<part>:<total>:" sized for the largest part number, so no chunk passes 255
   local size = MAX_MESSAGE - (#id + 3 + 2 * #tostring(math.ceil(#text / 200)))
   local total = math.ceil(#text / size)
+  local direct = (target.kind == "WHISPER" or target.kind == "BN") and target.name and ns.ShortName(target.name)
+  local failed = false
   local ok, err = pcall(function()
     for i = 1, total do
       local chunk = id .. ":" .. i .. ":" .. total .. ":" .. text:sub((i - 1) * size + 1, i * size)
-      local cb = (i == total and onSent) and function() onSent() end or nil
+      local last = i == total
+      local cb = (direct or (last and onSent)) and function(_, didSend)
+        if didSend == false then
+          failed = true
+        elseif direct then
+          sentDirect[direct] = ns.Now()
+        end
+        if last and onSent then onSent(not failed) end
+      end or nil
       if target.kind == "BN" then
         CTL:BNSendGameData(prio, ns.PREFIX, chunk, "WHISPER", target.id, "AucSync" .. target.id, cb)
       elseif target.kind == "WHISPER" then
@@ -334,11 +361,31 @@ C_Timer.NewTicker(60, function()
   end
 end)
 
+-- The peer a raw chunk is from, before its message is whole (Battle.net: by account).
+local function ChunkPeer(name, bnID)
+  if bnID then
+    for short, p in pairs(ns.peers) do
+      if p.bnID == bnID then return short, p end
+    end
+    return nil
+  end
+  local short = name and ns.ShortName(name)
+  return short, short and ns.peers[short]
+end
+
 local function Deliver(name, route, text, bnID)
   if name == "" then name = nil end
   if name and ns.IsMe(name) then return end
   local rkey = bnID and ("bn:" .. tostring(bnID)) or ns.ShortName(name)
   if not rkey then return end
+  local short, known = ChunkPeer(name, bnID)
+  if short then
+    local now = ns.Now()
+    heardAny[short] = now
+    if route == "whisper" or route == "bnet" then heardDirect[short] = now end
+    -- a long message still arriving keeps them online
+    if known and known.lastSeen and not known.gone then known.lastSeen = now end
+  end
   local whole = Reassemble(rkey, text)
   if not whole then return end
   local msg = ns.Decode(whole)

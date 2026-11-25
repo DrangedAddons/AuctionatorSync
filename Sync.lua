@@ -13,9 +13,9 @@
 --
 -- Two things start a sync:
 --   1. Someone comes online: they compare section sums with an in-sync player (any of them can
---      host; the least busy is picked), then swap prices for the sections that differ - spread
---      across up to 4 in-sync hosts when many differ (swarming), each merging its share and
---      passing what's new to everyone. A host that goes quiet has its share moved to another.
+--      host; the least busy is picked), then swap prices for the sections that differ, in
+--      pieces of PIECE_SECTIONS: each host works one piece at a time, merges it and passes
+--      what's new to everyone. A host that goes silent (not slow: silent) has its piece moved.
 --   2. Your Auctionator prices change (a full scan finishes, or you close the auction house
 --      after searching): your changed prices go to everyone online.
 -- Safety net: out of step with the master list for 2 minutes -> handshake again (also how two
@@ -35,13 +35,17 @@ local _, ns = ...
 
 local BATCH = 500           -- prices per DATA message (smaller = finer progress in the log)
 local HELLO_WAIT = 5        -- seconds to collect answers to a HELLO
-local JOIN_TIMEOUT = 180    -- seconds without hearing from the host before trying again
+local JOIN_TIMEOUT = 180    -- an incoming transfer with no chunk from its sender this long is dropped
 local HEARTBEAT = 60        -- seconds between STATE heartbeats
 local HEAL_AFTER = 120      -- seconds out of sync with the host before re-syncing
 local SINCE_MARGIN = 600    -- a quick handshake re-sends prices from a little before the last sync
-local COMPARE_TIMEOUT = 45  -- the compare step is two small messages: no answer by then, try another host
-local STALL_TIMEOUT = 60    -- a handshake piece with no prices moving either way for this long is dropped
-local BENCH_TIME = 600      -- a host dropped for that is not picked again for this long (10 minutes)
+local COMPARE_TIMEOUT = 45  -- after our sums have gone out: no answer (and nothing arriving) by then, try another host
+local STALL_TIMEOUT = 120   -- a handshake piece with not one chunk moving either way for this long is moved
+local BENCH_MIN = 120       -- a host that went silent sits out this long, doubling each time it happens
+local BENCH_MAX = 600       -- ...up to this
+local PIECE_SECTIONS = 128  -- a handshake goes in pieces this size (~1,500 prices), each finished on its own
+local RETRY_STEPS = { 20, 60, 180, 300 } -- seconds before retrying a failed sync, growing each time
+local REBUILD_SLICE = 1500  -- prices per frame when rebuilding the fingerprint (~4 ms: no login freeze)
 local WAIT_LIMIT = 60       -- looking for a host longer than this: carry on alone and retry later
 local SECTIONS = 4096       -- fine sections: one changed price sends ~22 others along, not ~350
 local GROUPS = 256          -- the compare's first step: section s is in group s % GROUPS
@@ -190,10 +194,20 @@ end
 -- Fingerprint: 4096 sections, each the sum (mod 2^32) of hash(item, price) for its items.
 -- The compare sends 256 group sums (16 sections each) first; see SUM / NEED.
 
-local sections, itemCount = {}, 0
+-- sectionKeys[s] = { [text key] = Auctionator's key }: which prices are in each section, kept as
+-- prices change, so sending a few sections never walks the whole list.
+local sections, sectionKeys, itemCount = {}, {}, 0
 local newestTs = 0 -- when the newest price in this list was seen (shared as nt)
 function ns.NewestPrice() return newestTs end
-for i = 0, SECTIONS - 1 do sections[i] = 0 end
+for i = 0, SECTIONS - 1 do
+  sections[i] = 0
+  sectionKeys[i] = {}
+end
+local rebuilding     -- the fingerprint rebuild in progress (several frames), or nil
+-- A handshake that didn't finish leaves our list part-merged: until one finishes, it isn't a
+-- candidate for the master list and we don't host (else two halves could each think they lead).
+local incomplete = false
+local inRebuild = false -- the rebuild itself is calling Track
 
 local function Hash(s)
   local h = 5381
@@ -205,15 +219,19 @@ local function SectionOf(key) return Hash(key) % SECTIONS end
 
 ns.dataVersion = 0 -- bumped on every price / seen-time change (the Price List rebuilds on it)
 
-local function Track(key, oldPrice, newPrice)
+-- orig: the key as Auctionator stores it (key is its text form)
+local function Track(key, oldPrice, newPrice, orig)
+  if rebuilding and not inRebuild then rebuilding.dirty = true end -- a price moved under the rebuild
   local s = SectionOf(key)
   if oldPrice and oldPrice > 0 then
     sections[s] = (sections[s] - Hash(key .. ":" .. oldPrice)) % TWO32
     itemCount = itemCount - 1
+    if not (newPrice and newPrice > 0) then sectionKeys[s][key] = nil end
   end
   if newPrice and newPrice > 0 then
     sections[s] = (sections[s] + Hash(key .. ":" .. newPrice)) % TWO32
     itemCount = itemCount + 1
+    sectionKeys[s][key] = orig or key
   end
 end
 
@@ -277,12 +295,12 @@ function ns.Fingerprint()
   return string.format("%08x-%d", total, itemCount)
 end
 
-local function RebuildFingerprint(data)
-  for i = 0, SECTIONS - 1 do sections[i] = 0 end
-  itemCount = 0
-  for key, entry in pairs(data) do
-    if type(entry) == "table" then Track(tostring(key), nil, entry.m) end
+local function ResetFingerprint()
+  for i = 0, SECTIONS - 1 do
+    sections[i] = 0
+    wipe(sectionKeys[i])
   end
+  itemCount = 0
 end
 
 ----------------------------------------------------------------------------------------------
@@ -370,30 +388,93 @@ local function FoldSuffixKeys(data, r)
   return folded
 end
 
+-- Rebuilding the fingerprint, the section index and what we know of each price, REBUILD_SLICE
+-- prices a frame, so a big list doesn't freeze the game. A price changing meanwhile (or the list
+-- gaining a key mid-walk) starts it over; after a few restarts the rest is done in one go.
+-- Nothing syncs until it's done (ns.FingerprintReady).
+local afterRebuild = {} -- functions to run once it's done
+
+function ns.FingerprintReady() return rebuilding == nil end
+
+local function WhenReady(fn)
+  if not rebuilding then fn() else afterRebuild[#afterRebuild + 1] = fn end
+end
+
+local function StartRebuild(data, r)
+  local job = { restarts = 0 }
+  rebuilding = job
+  local function Begin()
+    ResetFingerprint()
+    wipe(known)
+    job.dirty = false
+    job.co = coroutine.create(function()
+      local n = 0
+      for key, entry in pairs(data) do
+        if type(entry) == "table" then
+          known[key] = entry.m
+          Track(tostring(key), nil, entry.m, key)
+        end
+        n = n + 1
+        if n % REBUILD_SLICE == 0 then coroutine.yield() end
+      end
+      local newest = 0
+      for _, ts in pairs(r and r.ts or {}) do
+        if type(ts) == "number" and ts > newest then newest = ts end
+        n = n + 1
+        if n % REBUILD_SLICE == 0 then coroutine.yield() end
+      end
+      newestTs = math.max(newestTs, newest)
+    end)
+  end
+  local function Step()
+    if rebuilding ~= job then return end
+    local whole = job.restarts >= 3 -- prices keep changing under it: finish now
+    repeat
+      if job.dirty then
+        job.restarts = job.restarts + 1
+        Begin()
+      end
+      inRebuild = true
+      local ok = coroutine.resume(job.co)
+      inRebuild = false
+      if not ok then
+        job.dirty = true -- the list changed under the walk: start over
+      elseif coroutine.status(job.co) == "dead" and not job.dirty then
+        rebuilding = nil
+        ns.Detail("watching Auctionator's prices for %s: %s, fingerprint %s (%d restarts)",
+          tostring(ns.RealmKey()), ns.Plural(itemCount, "price"), ns.Fingerprint(), job.restarts)
+        local fns = afterRebuild
+        afterRebuild = {}
+        for _, fn in ipairs(fns) do
+          local fok, err = pcall(fn)
+          if not fok then ns.Log("after loading prices: %s", tostring(err)) end
+        end
+        ns.AnnounceState()
+        return
+      end
+    until not whole
+    C_Timer.After(0, Step)
+  end
+  Begin()
+  C_Timer.After(0, Step)
+end
+
 -- Auctionator can rebuild its database object (e.g. when you clear it), so keep checking.
 function ns.HookAuctionator()
   local db = DB()
   if not db or db == hookedDB or type(db.SetPrice) ~= "function" then return end
   hookedDB = db
-  wipe(known)
   local r0 = Realm()
-  if type(db.db) == "table" and r0 then
+  -- old text suffix keys: once per realm (synced prices arrive already converted)
+  if type(db.db) == "table" and r0 and SuffixLabels() and not r0.suffixFold then
     local folded = FoldSuffixKeys(db.db, r0)
+    r0.suffixFold = 1
     if folded > 0 then
       ns.Log("%s merged %s saved under old suffix names into Auctionator's own", ns.MyName(),
         ns.Plural(folded, "price"))
     end
   end
-  if type(db.db) == "table" then
-    for key, entry in pairs(db.db) do
-      if type(entry) == "table" then known[key] = entry.m end
-    end
-    RebuildFingerprint(db.db)
-  end
-  local r = Realm()
-  if r then
-    for _, ts in pairs(r.ts) do if ts > newestTs then newestTs = ts end end
-  end
+  if type(db.db) == "table" then StartRebuild(db.db, r0) end
   -- Auctionator calls SetPrice from its scan-processing ticker without a pcall: an error here
   -- would make that ticker fail on the same item every frame and the scan never finishes.
   hooksecurefunc(db, "SetPrice", function(self, key, price, available)
@@ -404,8 +485,6 @@ function ns.HookAuctionator()
       ns.Log("couldn't record a price from Auctionator: %s", tostring(err))
     end
   end)
-  ns.Detail("watching Auctionator's prices for %s: %s, fingerprint %s",
-    tostring(ns.RealmKey()), ns.Plural(itemCount, "price"), ns.Fingerprint())
 end
 
 ----------------------------------------------------------------------------------------------
@@ -476,14 +555,17 @@ local function Item(r, key, entry)
   return { key, entry.m, day and entry.a[day] or 0, ts }
 end
 
--- Every price in the given sections (a set of section numbers).
+-- Every price in the given sections (a set of section numbers): only those sections' prices are
+-- touched, however big the list.
 local function ItemsIn(set)
   local r, db = Realm(), DB()
   local list = {}
   if not r or not db or type(db.db) ~= "table" then return list end
-  for key, entry in pairs(db.db) do
-    if type(entry) == "table" and (entry.m or 0) > 0 and set[SectionOf(tostring(key))] then
-      list[#list + 1] = Item(r, tostring(key), entry)
+  local data = db.db
+  for s in pairs(set) do
+    for key, orig in pairs(sectionKeys[s] or {}) do
+      local entry = data[orig]
+      if type(entry) == "table" and (entry.m or 0) > 0 then list[#list + 1] = Item(r, key, entry) end
     end
   end
   return list
@@ -504,7 +586,8 @@ ns.KIND_WORDS = KIND_WORDS
 -- Transfers we're sending right now (for the Sync Monitor): { to, kind, tot, sent, started }
 ns.outgoing = {}
 
-function ns.SendEntries(target, list, prio, k, extra)
+-- onDone(out): once the last batch has gone out (not when cancelled).
+function ns.SendEntries(target, list, prio, k, extra, onDone)
   local realm = ns.RealmKey()
   transferCounter = transferCounter + 1
   local x = transferCounter
@@ -541,7 +624,18 @@ function ns.SendEntries(target, list, prio, k, extra)
     end
     local msg = { t = "DATA", r = realm, x = x, e = e, b = base, fin = (last >= n) or nil, k = k, tot = n }
     for field, value in pairs(extra or {}) do msg[field] = value end
-    local function onSent()
+    local function onSent(ok)
+      if out.cancelled then return end
+      if ok == false then
+        -- the game refused a chunk: the receiver can't rebuild this batch, so send it again
+        out.retries = (out.retries or 0) + 1
+        if out.retries <= 3 then
+          C_Timer.After(2 * out.retries, function() SendBatch(i) end)
+          return
+        end
+        ns.Log("%s: a batch to %s kept failing; skipped (the next compare picks those prices up)", label, out.to)
+      end
+      out.retries = 0
       out.sent = math.max(out.sent, last)
       if batches > 1 and n > 0 then
         ns.Detail("%s: sent %s / %s (%s, %d%%)", label, ns.Num(last), ns.Plural(n, "price"), what, floor(last / n * 100))
@@ -549,7 +643,12 @@ function ns.SendEntries(target, list, prio, k, extra)
       if out.sent >= n then ns.outgoing[out] = nil end
       if ns.OnSendProgress then ns.OnSendProgress() end
       ns.AnnounceState(true)
-      if last < n then SendBatch(last + 1) end
+      if last < n then
+        SendBatch(last + 1)
+      elseif onDone then
+        out.done = true
+        onDone(out)
+      end
     end
     if target then ns.Send(target, msg, prio, nil, onSent) else ns.Broadcast(msg, prio, nil, onSent) end
   end
@@ -569,6 +668,7 @@ function ns.CancelTransfersTo(name, why)
     end
   end
   if ns.DropHostingFor then ns.DropHostingFor(key) end
+  if ns.OnPeerLost then ns.OnPeerLost(key, why) end
   if stopped > 0 then
     ns.Log("%s stopped sending to %s (%s)", ns.MyName(), name, why)
     ns.AnnounceState()
@@ -631,7 +731,9 @@ ns.HostingCount = HostingCount
 
 local stateTimer
 local function StateMsg(t)
-  return { t = t or "STATE", r = ns.RealmKey(), st = ns.state, d = ns.Fingerprint(), os = ns.onlineSince,
+  -- while the fingerprint is still being rebuilt it isn't ours yet: nobody should pick us as a host
+  local st = ((rebuilding or incomplete) and ns.state == "ready") and "waiting" or ns.state
+  return { t = t or "STATE", r = ns.RealmKey(), st = st, d = ns.Fingerprint(), os = ns.onlineSince,
     w = ns.syncingWith, ls = ns.LastSync(), nt = newestTs, hl = HostingCount(), pg = ns.syncProgress,
     rx = ns.Receiving and ns.Receiving() or 0, ph = ns.state == "syncing" and ns.syncPhase or nil,
     hs = ns.state == "syncing" and ns.syncStep or nil, hd = ns.state == "syncing" and ns.syncDone or nil,
@@ -647,7 +749,7 @@ end
 -- progressOnly: just a progress number moved. Those wait until PROGRESS_EVERY seconds after the
 -- last announcement, so status messages don't eat the bandwidth the transfer itself needs.
 -- Real changes (state, fingerprint, hosting...) still go out within 2 seconds.
-local PROGRESS_EVERY = 10
+local PROGRESS_EVERY = 30
 local lastAnnounced = 0
 local stateTimerProgressOnly = false
 function ns.AnnounceState(progressOnly)
@@ -688,7 +790,7 @@ function ns.Master()
     votes[d] = (votes[d] or 0) + 1
     newest[d] = math.max(newest[d] or 0, tonumber(nt) or 0)
   end
-  if ns.state == "ready" then Vote(ns.Fingerprint(), newestTs) end
+  if ns.state == "ready" and not rebuilding and not incomplete then Vote(ns.Fingerprint(), newestTs) end
   for _, peer in pairs(ns.peers) do
     if ns.IsPeerOnline(peer) and Compatible(peer) and peer.st == "ready" then Vote(peer.d, peer.nt) end
   end
@@ -706,8 +808,9 @@ ns.MasterFingerprint = ns.Master
 -- Who can host a handshake: any ready player holding the master list. Least busy first, then
 -- random, so newcomers spread out instead of queueing behind one player.
 -- exclude = a set of peers to leave out.
--- Hosts that stalled or didn't answer sit out for BENCH_TIME: not picked for any handshake.
-local benched = {} -- peerKey -> until (server time)
+-- Hosts that went silent or didn't answer sit out a while (Bench): not picked for any handshake.
+local benched = {}    -- peerKey -> until (server time)
+local benchCount = {} -- peerKey -> times benched since they last finished a piece for us
 
 local function IsBenched(peer)
   local untilTs = benched[ns.ShortName(peer.name)]
@@ -715,8 +818,12 @@ local function IsBenched(peer)
 end
 
 local function Bench(peer, why)
-  benched[ns.ShortName(peer.name)] = ns.Now() + BENCH_TIME
-  ns.Log("%s benched as a host for %d min (%s)", peer.name, BENCH_TIME / 60, why)
+  local key = ns.ShortName(peer.name)
+  benchCount[key] = (benchCount[key] or 0) + 1
+  local secs = math.min(BENCH_MIN * 2 ^ (benchCount[key] - 1), BENCH_MAX)
+  benched[key] = ns.Now() + secs
+  ns.Log("%s sits out as a host for %s (%s)", peer.name,
+    secs >= 60 and string.format("%d min", floor(secs / 60)) or string.format("%ds", secs), why)
 end
 
 -- For the Sync Monitor: { { name, secondsLeft }, ... }
@@ -795,7 +902,7 @@ end
 --      with everyone else.
 --   4. A host that goes quiet has its piece moved to another host.
 
-local SECTIONS_PER_HOST = 64 -- each host gets at least this many sections (smaller isn't worth it)
+local SECTIONS_PER_HOST = 256 -- one more host per this many differing sections
 local SWARM_MAX = 6          -- never more hosts than this (past it the newcomer's own sending dominates)
 
 local join -- { verbose, probe, pieces = { [id] = piece }, bad = { [peer] = true }, changed, nextId }
@@ -870,8 +977,10 @@ end
 function ns.Pieces()
   local list = {}
   for _, piece in pairs(join and join.pieces or {}) do
-    list[#list + 1] = { host = piece.host.name, sections = #piece.list, done = piece.done,
-      got = piece.received or 0, tot = piece.tot }
+    if not piece.done then
+      list[#list + 1] = { host = piece.host.name, sections = #piece.list, done = piece.done,
+        got = piece.received or 0, tot = piece.tot }
+    end
   end
   return list
 end
@@ -896,23 +1005,30 @@ end
 -- The step we're on goes in ns.syncPhase: "comparing", "sending x / y" or "receiving x / y".
 local function UpdateProgress()
   if not join then return end
-  if not next(join.pieces) then
+  if not join.total then
     ns.syncProgress = 1
     ns.syncPhase = "comparing - waiting for " .. (join.probe and join.probe.name or "the host")
     ns.syncStep, ns.syncDone, ns.syncTotal = "comparing", nil, nil
     ns.AnnounceState()
     return
   end
+  -- by sections: finished pieces count whole, the ones under way by how far they've got
   local upDone, upTot, inDone, inTot = 0, 0, 0, 0
+  local sectionsDone = 0
   for _, piece in pairs(join.pieces) do
     local ut = piece.up and piece.up.tot or 0
     local ud = piece.up and piece.up.sent or 0
     local rt = piece.tot or math.max(ut, 1)
     local rd = piece.done and rt or math.min(piece.received or 0, rt)
-    upDone, upTot, inDone, inTot = upDone + ud, upTot + ut, inDone + rd, inTot + rt
+    if piece.done then
+      sectionsDone = sectionsDone + #piece.list
+    else
+      upDone, upTot, inDone, inTot = upDone + ud, upTot + ut, inDone + rd, inTot + rt
+      local moved = (ut + rt) > 0 and (ud + rd) / (ut + rt) or 0
+      sectionsDone = sectionsDone + #piece.list * moved
+    end
   end
-  local total = upTot + inTot
-  ns.syncProgress = total > 0 and math.min(99, math.max(1, floor((upDone + inDone) / total * 100))) or 1
+  ns.syncProgress = math.min(99, math.max(1, floor(sectionsDone / math.max(join.total, 1) * 100)))
   if upDone < upTot then
     ns.syncStep, ns.syncDone, ns.syncTotal = "sending", upDone, upTot
   else
@@ -933,8 +1049,11 @@ ns.OnSendProgress = function()
   UpdateProgress()
 end
 
+local retryStep = 0 -- failed syncs in a row (sets how long RetrySoon waits)
+
 local function FinishJoin(verbose, changed, via)
   local r = Realm()
+  if via then retryStep, incomplete = 0, false end
   if join then
     for _, piece in pairs(join.pieces) do if piece.timer then piece.timer:Cancel() end end
     if join.timer then join.timer:Cancel() end
@@ -956,33 +1075,45 @@ end
 
 local RetrySoon -- forward declaration (needs StartHandshake)
 
-local function GiveUp()
+local function GiveUp(why)
   local verbose = join and join.verbose
-  ns.Log("%s couldn't finish syncing: no in-sync host answered; trying again shortly", ns.MyName())
+  incomplete = true
+  ns.Log("%s couldn't finish syncing (%s); what arrived is kept, trying again shortly", ns.MyName(),
+    why or "no in-sync host left")
   Say(verbose, "Couldn't finish syncing; it'll try again shortly.")
   FinishJoin(verbose, join and join.changed, nil)
   RetrySoon()
 end
 
 local SendPiece -- forward declaration (pieces re-send themselves on reassignment)
+local NextPiece -- forward declaration (a free host takes the next queued piece)
 local CompareTimedOut -- forward declaration (StartHandshake arms it, the watchdog backs it up)
 
--- Drop a stalled piece: tell that host to stop, stop our upload to it, bench it, and give the
--- piece to another in-sync host. No host left: stop the handshake cleanly and retry later.
-local function KickPiece(piece, why)
+-- Drop a piece whose host went silent (or offline): tell it to stop, stop our upload, let it
+-- sit out a while, and put the piece back at the front of the queue for another host. Pieces
+-- already finished stay merged. No host left: end cleanly, keep what arrived, retry later.
+local function KickPiece(piece, why, bench)
   local old = piece.host
   if piece.up then piece.up.cancelled = true end
+  if piece.timer then piece.timer:Cancel() end
   ns.Send(ns.ReplyTarget(old), { t = "CANCEL", r = ns.RealmKey(), pc = piece.id }, "ALERT")
-  Bench(old, why)
+  if bench ~= false then Bench(old, why) end
   join.bad[old] = true
+  join.pieces[piece.id] = nil
+  table.insert(join.queue, 1, piece.list)
   local hosts = Hosts(ns.Master(), join.bad)
-  if not hosts[1] then
-    GiveUp()
-    return
+  ns.Log("%s stopped using %s (%s)%s", ns.MyName(), old.name, why,
+    hosts[1] and string.format("; %d sections go to %s", #piece.list, hosts[1].name) or "")
+  -- any host already busy with us keeps going; a new one takes over the dropped piece
+  local busy = {}
+  for _, p in pairs(join.pieces) do if not p.done then busy[p.host] = true end end
+  for _, h in ipairs(hosts) do
+    if not busy[h] then
+      NextPiece(h)
+      return
+    end
   end
-  ns.Log("%s dropped %s (%s); moving %d sections to %s", ns.MyName(), old.name, why, #piece.list, hosts[1].name)
-  piece.host, piece.received, piece.tot, piece.lastUp = hosts[1], 0, nil, nil
-  SendPiece(piece)
+  if not next(busy) then GiveUp(string.format("%s %s", old.name, why)) end
 end
 
 SendPiece = function(piece)
@@ -1002,8 +1133,32 @@ SendPiece = function(piece)
     join.since and string.format(" (only those seen since %s; %s in those sections)", date("%H:%M", join.since), ns.Num(all)) or "")
   piece.up = ns.SendEntries(ns.ReplyTarget(piece.host), items, "BULK", "join",
     { bs = PackSections(piece.list), pc = piece.id, sn = join.since })
-  piece.lastProgress = ns.Now()
+  piece.started, piece.lastProgress = ns.Now(), ns.Now()
   UpdateProgress()
+end
+
+-- A host is free: give it the next queued piece. Nothing left and nothing under way: done.
+NextPiece = function(host)
+  if not join then return end
+  local list = table.remove(join.queue, 1)
+  if not list then
+    for _, p in pairs(join.pieces) do
+      if not p.done then return end -- others still under way
+    end
+    local names = {}
+    for _, p in pairs(join.pieces) do names[p.host.name] = true end
+    local via = {}
+    for n in pairs(names) do via[#via + 1] = n end
+    table.sort(via)
+    FinishJoin(join.verbose, join.changed, table.concat(via, ", "))
+    return
+  end
+  local set = {}
+  for _, sec in ipairs(list) do set[sec] = true end
+  join.nextId = join.nextId + 1
+  local piece = { id = join.nextId, host = host, list = list, set = set, received = 0 }
+  join.pieces[piece.id] = piece
+  SendPiece(piece)
 end
 
 -- Step 2: deal the differing sections out to hosts.
@@ -1018,34 +1173,29 @@ local function HostCount(differing, candidates)
   return math.max(1, math.min(floor(free / 2), floor(differing / SECTIONS_PER_HOST), SWARM_MAX))
 end
 
+-- The differing sections go in a queue of PIECE_SECTIONS-sized pieces. Each host works on one
+-- piece at a time and takes the next when it's done, so a slow host simply does fewer, and a
+-- failure only ever loses the piece under way.
 local function StartPieces(bk)
+  join.queue, join.total = {}, #bk
+  for i = 1, #bk, PIECE_SECTIONS do
+    local list = {}
+    for j = i, math.min(i + PIECE_SECTIONS - 1, #bk) do
+      local s = tonumber(bk[j])
+      if s then list[#list + 1] = s end
+    end
+    if #list > 0 then join.queue[#join.queue + 1] = list end
+  end
   local candidates = Hosts(ns.Master(), join.bad)
-  local want = HostCount(#bk, candidates)
+  local want = math.min(HostCount(#bk, candidates), #join.queue)
   local hosts = { join.probe }
   for _, h in ipairs(candidates) do
     if h ~= join.probe and #hosts < want then hosts[#hosts + 1] = h end
   end
-  local per = math.ceil(#bk / #hosts)
-  local parts = {}
-  for i, h in ipairs(hosts) do
-    local list, set = {}, {}
-    for j = (i - 1) * per + 1, math.min(i * per, #bk) do
-      local s = tonumber(bk[j])
-      if s then
-        list[#list + 1] = s
-        set[s] = true
-      end
-    end
-    if #list > 0 then
-      join.nextId = join.nextId + 1
-      local piece = { id = join.nextId, host = h, list = list, set = set, received = 0 }
-      join.pieces[piece.id] = piece
-      parts[#parts + 1] = string.format("%s (%d)", h.name, #list)
-    end
-  end
-  ns.Detail("%d of %d sections differ: %s", #bk, SECTIONS, #parts > 1
-    and ("splitting across " .. #parts .. " hosts: " .. table.concat(parts, ", ")) or ("all from " .. join.probe.name))
-  for _, piece in pairs(join.pieces) do SendPiece(piece) end
+  local names = {}
+  for _, h in ipairs(hosts) do names[#names + 1] = h.name end
+  ns.Detail("%d of %d sections differ: %d pieces, from %s", #bk, SECTIONS, #join.queue, table.concat(names, ", "))
+  for _, h in ipairs(hosts) do NextPiece(h) end
 end
 
 -- Step 1: compare section sums with one host.
@@ -1058,29 +1208,42 @@ local function StartHandshake(verbose, probe, full)
   local r = Realm()
   local last = r and r.lastCatchUp or 0
   local since = (not full and last > 0) and (last - SINCE_MARGIN) or nil
-  join = { verbose = verbose, probe = probe, pieces = {}, bad = {}, changed = 0, nextId = 0, target = ns.Master(),
-    since = since, full = full, started = ns.Now() }
+  join = { verbose = verbose, probe = probe, pieces = {}, queue = {}, bad = {}, changed = 0, nextId = 0,
+    target = ns.Master(), since = since, full = full, started = ns.Now() }
   SetState("syncing", probe.name)
   ns.syncProgress = 0
   ns.Log("%s is syncing with %s%s", ns.MyName(), probe.name, since and "" or " (full)")
   local b = GroupSums()
   ns.syncPhase = "comparing - waiting for " .. probe.name
   ns.syncStep, ns.syncDone, ns.syncTotal = "comparing", nil, nil
+  local mine = join
+  -- the answer is timed from when our sums have actually gone out (the throttle can hold them)
   ns.Send(ns.ReplyTarget(probe), { t = "SUM", r = ns.RealmKey(), b = b }, "ALERT", nil, function()
+    if join ~= mine then return end
+    mine.sumsSent = ns.Now()
     ns.Detail("%s sent its section sums to %s; waiting for the comparison", ns.MyName(), probe.name)
   end)
   UpdateProgress()
-  local mine = join
-  join.timer = C_Timer.NewTimer(COMPARE_TIMEOUT, function() CompareTimedOut(mine) end)
+end
+
+-- Waiting for the compare's answer: given up on once our sums have been out COMPARE_TIMEOUT
+-- with nothing at all arriving from them (an answer still coming in chunks counts), or after
+-- 3 minutes whatever happens. Checked by the watchdog.
+local function CompareStalled(mine, now)
+  if mine.total then return false end
+  if now - mine.started > 180 then return true end
+  if not mine.sumsSent then return false end
+  local heard = math.max(mine.sumsSent, ns.HeardFrom(mine.probe, true))
+  return now - heard > COMPARE_TIMEOUT
 end
 
 -- The probe never answered our section sums: bench it and compare with another host.
 CompareTimedOut = function(mine)
-  if join ~= mine or next(mine.pieces) then return end
+  if join ~= mine or mine.total then return end
   local probe = mine.probe
   if mine.timer then mine.timer:Cancel(); mine.timer = nil end
   mine.bad[probe] = true
-  Bench(probe, string.format("no answer to the compare in %ds", COMPARE_TIMEOUT))
+  Bench(probe, "no answer to the compare")
   local hosts = Hosts(ns.Master(), mine.bad)
   if hosts[1] then
     ns.Log("%s didn't answer; comparing with %s instead", probe.name, hosts[1].name)
@@ -1092,22 +1255,27 @@ CompareTimedOut = function(mine)
   end
 end
 
--- After a failed attempt: try again in a little while with whichever host is free (benched
--- ones sit out). Nobody left to try: stay ready on our own list; the self-repair catches up later.
-local RETRY_AFTER = 20
+-- After a failed attempt: try again with whichever host is free (ones that went silent sit
+-- out), waiting longer each time it fails in a row (20s, 1, 3, 5 min). Nobody left to try:
+-- stay ready on our own list; the safety net catches up later.
 local retryPending = false
 RetrySoon = function()
   if retryPending then return end
   retryPending = true
-  C_Timer.After(RETRY_AFTER, function()
+  retryStep = retryStep + 1
+  local wait = RETRY_STEPS[math.min(retryStep, #RETRY_STEPS)]
+  C_Timer.After(wait, function()
     retryPending = false
-    if join or ns.state ~= "ready" or ns.IsScanning() then return end
+    if join or ns.state ~= "ready" then return end
+    if ns.IsScanning() or rebuilding then RetrySoon() return end
     local master = ns.Master()
-    if not master or master == ns.Fingerprint() then return end
-    local hosts = Hosts(master)
+    if not incomplete and (not master or master == ns.Fingerprint()) then return end
+    local hosts = master and Hosts(master) or {}
     if hosts[1] then
       ns.Log("%s retries syncing with %s", ns.MyName(), hosts[1].name)
       StartHandshake(false, hosts[1])
+    else
+      RetrySoon() -- nobody free yet (or everyone sitting out): keep trying, less often
     end
   end)
 end
@@ -1117,6 +1285,14 @@ function ns.CatchUp(verbose)
   local r = Realm()
   if not r then
     Say(verbose, "Auctionator's prices aren't loaded yet; try again in a moment.")
+    return
+  end
+  if rebuilding then
+    -- still reading Auctionator's list: sync the moment it's done
+    if not rebuilding.catchUp then
+      rebuilding.catchUp = true
+      WhenReady(function() ns.CatchUp(verbose) end)
+    end
     return
   end
   if ns.IsScanning() then
@@ -1220,6 +1396,18 @@ local function NoteState(peer, msg, isHello)
   end
 end
 
+-- A host we're pulling a piece from reloaded or went offline: move that piece now.
+ns.OnPeerLost = function(key, why)
+  if not join then return end
+  for _, piece in pairs(join.pieces) do
+    if not piece.done and ns.ShortName(piece.host.name) == key then
+      KickPiece(piece, why, false)
+      if not join then return end
+    end
+  end
+  if join and not join.total and ns.ShortName(join.probe.name) == key then CompareTimedOut(join) end
+end
+
 -- A player we were hosting reloaded or left: forget their unfinished pieces.
 function ns.DropHostingFor(peerKey)
   local changed = false
@@ -1295,6 +1483,7 @@ function ns.OnMessage(msg, peer)
     NoteState(peer, msg, false)
 
   elseif msg.t == "SUM" then
+    if rebuilding then return end -- our sums aren't whole yet; they'll try another host
     -- Someone is comparing with us: which groups of sections differ? With only a few, add our
     -- sums for each of their 16 sections so they can tell exactly which (no extra round trip,
     -- and the answer stays a few messages long).
@@ -1331,7 +1520,7 @@ function ns.OnMessage(msg, peer)
     ns.Log("%s dropped %s as a host for a handshake piece; stopped sending it", peer.name, ns.MyName())
 
   elseif msg.t == "NEED" then
-    if not join or join.probe ~= peer or next(join.pieces) then return end
+    if not join or join.probe ~= peer or join.total then return end
     if join.timer then join.timer:Cancel(); join.timer = nil end
     local bk = type(msg.bk) == "table" and msg.bk or {}
     if #bk == 0 then
@@ -1405,11 +1594,20 @@ function ns.OnMessage(msg, peer)
     end
     if tr.timer then tr.timer:Cancel() end
     if not msg.fin then
-      tr.timer = C_Timer.NewTimer(JOIN_TIMEOUT, function()
+      -- dropped only if not one chunk from them arrives for JOIN_TIMEOUT (a slow transfer is fine)
+      local function Check()
+        if transfers[tkey] ~= tr then return end
+        local quiet = ns.Now() - math.max(tr.lastBatch or 0, ns.HeardFrom(peer))
+        if quiet < JOIN_TIMEOUT then
+          tr.timer = C_Timer.NewTimer(JOIN_TIMEOUT - quiet + 1, Check)
+          return
+        end
         transfers[tkey] = nil
         DoneHosting(tkey)
         ns.Log("prices from %s stopped arriving partway (%s kept)", peer.name, ns.Plural(tr.changed, "change"))
-      end)
+      end
+      tr.lastBatch = ns.Now()
+      tr.timer = C_Timer.NewTimer(JOIN_TIMEOUT, Check)
       return
     end
     transfers[tkey] = nil
@@ -1431,18 +1629,22 @@ function ns.OnMessage(msg, peer)
         end
       end
       ns.Detail("%s sends %s the master list for those sections: %s", ns.MyName(), peer.name, ns.Plural(#reply, "price"))
-      replies[peerKey .. "#" .. tostring(tr.pc)] = ns.SendEntries(ns.ReplyTarget(peer), reply, "BULK", "reply", { pc = tr.pc, tot = #reply })
-      if #tr.brought > 0 then
-        local others = 0
-        for short, p in pairs(ns.peers) do
-          if short ~= peerKey and ns.IsPeerOnline(p) and Compatible(p) then others = others + 1 end
-        end
-        if others > 0 then
-          ns.Detail("master list ready: sharing the %s from %s with %s", ns.Plural(#tr.brought, "new price"),
-            peer.name, ns.Plural(others, "other player"))
-          ns.SendEntries(nil, tr.brought, "NORMAL", "fwd")
-        end
-      end
+      -- The reply goes first (they're waiting on it); what they brought is shared with everyone
+      -- else once it's out, at the lowest priority.
+      local brought = tr.brought
+      replies[peerKey .. "#" .. tostring(tr.pc)] = ns.SendEntries(ns.ReplyTarget(peer), reply, "NORMAL", "reply",
+        { pc = tr.pc, tot = #reply }, function()
+          if #brought == 0 then return end
+          local others = 0
+          for short, p in pairs(ns.peers) do
+            if short ~= peerKey and ns.IsPeerOnline(p) and Compatible(p) then others = others + 1 end
+          end
+          if others > 0 then
+            ns.Detail("master list ready: sharing the %s from %s with %s", ns.Plural(#brought, "new price"),
+              peer.name, ns.Plural(others, "other player"))
+            ns.SendEntries(nil, brought, "BULK", "fwd")
+          end
+        end)
       DoneHosting(tkey)
       MarkSynced()
       Report(tr.changed)
@@ -1453,20 +1655,11 @@ function ns.OnMessage(msg, peer)
         piece.done = true
         if piece.timer then piece.timer:Cancel() end
         join.changed = join.changed + tr.changed
+        benchCount[peerKey] = nil -- they came through
         ns.Detail("%s received %s from %s (%d sections), %s changed", ns.MyName(), ns.Plural(tr.received, "price"),
           peer.name, #piece.list, ns.Num(tr.changed))
         UpdateProgress()
-        local all, names = true, {}
-        for _, p in pairs(join.pieces) do
-          if not p.done then all = false end
-          names[p.host.name] = true
-        end
-        if all then
-          local list = {}
-          for n in pairs(names) do list[#list + 1] = n end
-          table.sort(list)
-          FinishJoin(join.verbose, join.changed, table.concat(list, ", "))
-        end
+        NextPiece(peer)
       else
         MarkSynced()
         Report(tr.changed)
@@ -1508,21 +1701,35 @@ local function Watchdog()
     end
     return
   end
-  if not next(join.pieces) then
-    if now - (join.started or now) > COMPARE_TIMEOUT + 15 then CompareTimedOut(join) end
+  if not join.total then
+    if CompareStalled(join, now) then CompareTimedOut(join) end
     return
   end
-  local all = true
+  -- A piece is only moved when not one chunk has crossed between us and its host, either way,
+  -- for STALL_TIMEOUT. Slow is fine; silent isn't.
+  local busy = false
   for _, piece in pairs(join.pieces) do
     if not piece.done then
-      all = false
-      if now - (piece.lastProgress or join.started or now) > STALL_TIMEOUT then
-        KickPiece(piece, string.format("no progress for %ds", STALL_TIMEOUT))
-        if not join then return end
+      busy = true
+      local h = piece.host
+      local last = math.max(piece.lastProgress or 0, piece.started or 0, ns.HeardFrom(h, true), ns.SentTo(h))
+      if not ns.IsPeerOnline(h) then
+        KickPiece(piece, "went offline", false)
+      elseif now - last > STALL_TIMEOUT then
+        KickPiece(piece, string.format("nothing from them for %d min", floor(STALL_TIMEOUT / 60)))
       end
+      if not join then return end
     end
   end
-  if all then FinishJoin(join.verbose, join.changed, join.probe and join.probe.name) end
+  -- nothing under way and the queue still holds pieces (a host was lost between pieces)
+  if not busy then
+    if #join.queue > 0 then
+      local hosts = Hosts(ns.Master(), join.bad)
+      if hosts[1] then NextPiece(hosts[1]) else GiveUp() end
+    else
+      NextPiece(join.probe) -- finishes the handshake
+    end
+  end
 end
 C_Timer.NewTicker(5, function()
   local ok, err = pcall(Watchdog)
@@ -1546,7 +1753,7 @@ C_Timer.NewTicker(30, function()
   -- for HEAL_AFTER seconds -> handshake with a free player who has it. The handshake also brings
   -- this side's different prices into the master list, so nothing is lost.
   local master = ns.Master()
-  if ns.state == "ready" and not join and master and master ~= ns.Fingerprint()
+  if ns.state == "ready" and not join and not rebuilding and not retryPending and master and master ~= ns.Fingerprint()
     and not ns.IsScanning() and not next(pending) and ns.Receiving() == 0 then
     mismatchSince = mismatchSince or ns.Now()
     if ns.Now() - mismatchSince >= HEAL_AFTER then
