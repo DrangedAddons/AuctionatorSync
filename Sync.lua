@@ -41,6 +41,7 @@ local JOIN_TIMEOUT = 600    -- seconds with no batch before a half-received tran
 local HEARTBEAT = 60        -- seconds between STATE heartbeats
 local HEAL_AFTER = 45       -- seconds out of sync before comparing again (a retry only sends what differs)
 local COMPARE_TIMEOUT = 45  -- seconds to answer once the section stamps have actually been sent
+local REPLY_STALL = 300     -- after they answered: this long with no batch of their prices, give up on them
 local BENCH_TIME = 120      -- didn't answer the compare: not asked again for this long
 local WAIT_LIMIT = 60       -- looking for someone to compare with longer than this: carry on, retry later
 local SECTIONS = 4096       -- fine sections: one changed price no longer drags hundreds of others with it
@@ -551,6 +552,8 @@ function ns.CancelTransfersTo(name, why)
     ns.Log("%s stopped sending to %s (%s)", ns.MyName(), name, why)
     ns.AnnounceState()
   end
+  -- the player we're syncing with is gone: that sync can't finish
+  if ns.OnPartnerLost then ns.OnPartnerLost(key, why) end
 end
 
 ----------------------------------------------------------------------------------------------
@@ -909,6 +912,33 @@ local function GiveUp()
   RetrySoon()
 end
 
+-- The partner went offline, reloaded, or stopped sending their prices partway. Slowness alone
+-- never gets here (REPLY_STALL counts from their last batch, not from the start). Our own
+-- broadcast is left to finish: everyone online still merges it.
+local function PartnerLost(why, bench)
+  if not join then return end
+  local peer, verbose = join.peer, join.verbose
+  if join.timer then join.timer:Cancel() end
+  join = nil
+  -- their half-received transfer can't finish either; drop it so the safety net isn't held up
+  local prefix = ns.ShortName(peer.name) .. "/"
+  for k, tr in pairs(transfers) do
+    if k:sub(1, #prefix) == prefix then
+      if tr.timer then tr.timer:Cancel() end
+      transfers[k] = nil
+    end
+  end
+  if bench then Bench(peer, why) end
+  ns.Log("%s stopped syncing with %s (%s); trying again shortly", ns.MyName(), peer.name, why)
+  Say(verbose, "Sync with %s stopped (%s); it'll try again shortly.", peer.name, why)
+  SetState("ready")
+  RetrySoon()
+end
+
+ns.OnPartnerLost = function(key, why)
+  if join and join.peer and ns.ShortName(join.peer.name) == key then PartnerLost(why, false) end
+end
+
 -- The one who is behind starts the compare. Newer prices win the tie; equal times, one name does,
 -- so two players never both send their whole differing set at the same moment.
 local function ShouldSyncWith(peer)
@@ -1068,6 +1098,7 @@ local function HandleNeed(peer, msg)
   end
   join.sections = n
   join.expectReply = true
+  join.lastReply = ns.Now() -- the stall clock starts at their answer
   local list = ItemsInBuckets(set)
   ns.Log("%s is syncing %s across %d sections with %s", ns.MyName(), ns.Plural(#list, "price"), n, peer.name)
   join.up = ns.SendEntries(nil, list, "BULK", "sync", nil, { remember = "buckets" })
@@ -1096,6 +1127,7 @@ local function IngestPrices(msg, peer, r)
   if mine then
     join.got = tr.received
     join.replyTot = tr.tot
+    join.lastReply = ns.Now()
     UpdateProgress()
   elseif tr.kind ~= "join" then
     ns.AnnounceState(true)
@@ -1371,6 +1403,12 @@ local function Watchdog()
   end
   if not join.answered and now - (join.started or now) > 150 then
     CompareTimedOut(join)
+    return
+  end
+  -- they answered but their prices stopped coming (their send failed, or they froze): a slow
+  -- transfer still delivers a batch now and then, a dead one doesn't
+  if join.expectReply and not join.gotReply and now - (join.lastReply or join.started or now) > REPLY_STALL then
+    PartnerLost(string.format("no prices from them for %d min", floor(REPLY_STALL / 60)), true)
     return
   end
   MaybeFinish()
