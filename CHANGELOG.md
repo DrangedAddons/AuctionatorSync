@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.4
+A Price List (`/ah`) that opens at once and doesn't stall the game while a sync runs.
+- **Fixed a freeze every 5 seconds during syncs.** With the Price List open, every price that came in made it rebuild and re-sort all of its rows every 5 seconds (about a third of a second each time with 51,000 prices). Now only the rows whose prices changed are updated: in the default name sort a price change is a plain update, in other sorts the moved rows are slotted back into place.
+- **`/ah` opens without the hitch.** The rows are made in the background a few milliseconds per frame, 30 seconds after login, and kept between opens. Opening used to rebuild the whole list from scratch every time (about half a second), reading the price list three times over.
+- **The search waits until you stop typing** (0.3 s, or Enter for at once) instead of filtering the whole list on every key. Typing more of the same word only narrows the last result, and the list is never re-sorted for a search: it's kept in order.
+- **Grey (poor) items are no longer listed**, and Poor is gone from the rarity filter. Their prices still sync.
+- Only the lines on screen are drawn, as before. With nothing filtered, the list is shown as it is, with no copy.
+- The log no longer repeats "X is in sync" every few seconds. A player hosting someone's handshake gets new prices merged in, which changes their fingerprint every few seconds while they stay in sync, and each change logged it again. It's now logged when they become in sync, and again only after they've been out of it.
+- The fingerprint total is kept as prices change instead of added up from all 4,096 sections every time a status message or window refresh asks for it.
+
 ## 1.5.3
 Handshakes that don't fail, and don't cost frames.
 - **A slow sync is never dropped.** Whether the other player is still there is now judged by every piece of every message crossing between you, not by whole 500-price batches finishing. A busy host that takes minutes per batch is left to finish; only real silence (nothing at all for 2 minutes), logging off or reloading moves on.

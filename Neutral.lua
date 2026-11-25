@@ -49,6 +49,30 @@ local function List()
 end
 
 -- For the Price List: { key, price, seen at, available }, the same shape as ns.PriceEntries.
+-- The same without building a table per price: fn(key, price, seen at, available).
+function ns.ForEachNeutralPrice(fn)
+  local r = List()
+  if not r then return end
+  for key, it in pairs(r.items) do
+    if (it.p or 0) > 0 then fn(tostring(key), it.p, it.t or 0, it.a) end
+  end
+end
+
+function ns.NeutralPriceKeys(out)
+  local r = List()
+  if not r then return out end
+  for key in pairs(r.items) do out[#out + 1] = tostring(key) end
+  return out
+end
+
+-- One neutral price: price, seen at, available; nil when there's none for this key.
+function ns.NeutralPriceOf(key)
+  local r = List()
+  local it = r and r.items[key]
+  if not it or (it.p or 0) <= 0 then return nil end
+  return it.p, it.t or 0, it.a
+end
+
 function ns.NeutralEntries()
   local r, out = List(), {}
   if not r then return out end
@@ -95,6 +119,7 @@ local function NeutralSetPrice(_, key, price, available)
     r.items[key] = { p = price, t = ns.Now(), a = avail }
     seenHere[key] = true
     ns.dataVersion = ns.dataVersion + 1
+    if ns.PriceChanged then ns.PriceChanged(key, true) end
   end)
   if not ok and not diverted.failed then
     diverted.failed = true
@@ -287,7 +312,10 @@ function ns.OnNeutralMessage(msg, peer)
   end
   if not msg.fin then return end
   incoming[tkey] = nil
-  if tr.changed > 0 then ns.dataVersion = ns.dataVersion + 1 end
+  if tr.changed > 0 then
+    ns.dataVersion = ns.dataVersion + 1
+    if ns.PriceChanged then ns.PriceChanged(nil, true) end
+  end
   if msg.rp then r.synced = ns.Now() end -- the answer to our catch-up request
   if tr.received > 0 then
     ns.Log("%s sent %s from the neutral auction house: %s changed", peer.name,

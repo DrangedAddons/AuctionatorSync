@@ -6,9 +6,15 @@
 --   * a name book (AuctionatorSyncDB.names) keeps every resolved name and quality across sessions;
 --   * a background warm-up after login asks the game for any item the book doesn't have yet,
 --     a few dozen at a time;
---   * the list is only drawn once every item is resolved (a loading bar shows until then), and
---     items that never resolve (removed from the game) are left out, so no broken rows.
+--   * a big first load shows a loading bar instead of half-drawn rows; a few new items just appear
+--     once they resolve. Items that never resolve (removed from the game) are left out.
 -- Icons and categories come from GetItemInfoInstant, which never needs loading.
+--
+-- Speed (51k prices): rows are made once and kept between opens; a price change moves only its
+-- own row (Sync/Neutral call ns.PriceChanged), so a sync running while the list is open doesn't
+-- redo the whole list. The rows stay sorted, so filtering never re-sorts, and with no filter
+-- the sorted rows are shown as they are. Only the visible lines are drawn. Grey (poor) items
+-- are left out: nobody shops for them.
 local _, ns = ...
 
 local GetInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
@@ -29,6 +35,7 @@ local waiting = {}  -- itemID -> { first asked, last asked }
 local failed = {}   -- itemID -> true: not an item, or never answered (this session)
 local warmTicker, warmTicks = nil, 0
 local onProgress    -- the window's refresh, while it's open
+local nameWait = {} -- itemID -> { [price key] = neutral? }: rows waiting for this item's name
 
 local function Book() return ns.store.names end
 
@@ -38,6 +45,11 @@ local function Remember(id)
     local reqLevel = select(5, GetInfo(id))
     Book()[id] = { name, quality or 1, reqLevel or 0 } -- name, quality, required level
     waiting[id] = nil
+    local keys = nameWait[id]
+    if keys then
+      nameWait[id] = nil
+      for key, neutral in pairs(keys) do ns.PriceChanged(key, neutral) end
+    end
     return true
   end
 end
@@ -45,29 +57,25 @@ end
 -- Every distinct item ID in the price list.
 local function ItemIDs()
   local ids, seen = {}, {}
-  for _, source in ipairs({ ns.PriceEntries(), ns.NeutralEntries and ns.NeutralEntries() or {} }) do
-    for _, e in ipairs(source) do
-      local id = ns.ItemIDFromKey(e[1])
-      if id and not seen[id] then
-        seen[id] = true
-        ids[#ids + 1] = id
-      end
+  local function Add(key)
+    local id = ns.ItemIDFromKey(key)
+    if id and not seen[id] then
+      seen[id] = true
+      ids[#ids + 1] = id
     end
   end
+  ns.ForEachPrice(Add)
+  if ns.ForEachNeutralPrice then ns.ForEachNeutralPrice(Add) end
   return ids
 end
 
 function ns.NamesLoading() return warmTicker ~= nil end
 
--- done = resolved or given up on; total = every item ID in the list
+-- This round of the warm-up: done = resolved or given up on, total = asked for.
 function ns.NameProgress()
-  local done, total = 0, 0
-  local book = Book()
-  for _, id in ipairs(ItemIDs()) do
-    total = total + 1
-    if (book[id] and book[id][3]) or failed[id] then done = done + 1 end
-  end
-  return done, total
+  local inFlight = 0
+  for _ in pairs(waiting) do inFlight = inFlight + 1 end
+  return math.max(0, qi - 1 - inFlight), #queue
 end
 
 local function WarmTick()
@@ -101,22 +109,38 @@ local function WarmTick()
   if finished then
     warmTicker:Cancel()
     warmTicker = nil
-    ns.Detail("Price List item details ready: %s known", ns.Plural(select(2, ns.NameProgress()), "item"))
+    ns.Detail("Price List item details ready (%s asked for)", ns.Plural(#queue, "item"))
+    queue, qi = {}, 1
   end
 end
 
--- Queue every item the book doesn't know yet (safe to call any time; repeats are cheap).
+-- Missing from the book, or saved before the book kept required levels.
+local function NeedsName(id)
+  local b = Book()[id]
+  return (not b or not b[3]) and not failed[id]
+end
+
+-- Ask for these items' details in the background (ids already known or asked for are skipped).
+local function WarmIDs(ids)
+  local queued = {}
+  for i = qi, #queue do queued[queue[i]] = true end
+  local added = 0
+  for _, id in ipairs(ids) do
+    if NeedsName(id) and not waiting[id] and not queued[id] then
+      queue[#queue + 1] = id
+      queued[id] = true
+      added = added + 1
+    end
+  end
+  if added == 0 then return end
+  ns.Detail("Price List: loading item details for %s in the background", ns.Plural(added, "item"))
+  if not warmTicker then warmTicker = C_Timer.NewTicker(WARM_TICK, WarmTick) end
+end
+
+-- Queue every item the book doesn't know yet (once after login; the list queues its own later).
 function ns.WarmNames()
   if not ns.store or not ns.store.names then return end
-  queue, qi = {}, 1
-  local book = Book()
-  for _, id in ipairs(ItemIDs()) do
-    -- missing, or saved before the book kept required levels
-    if (not book[id] or not book[id][3]) and not failed[id] then queue[#queue + 1] = id end
-  end
-  if #queue == 0 then return end
-  ns.Detail("Price List: loading item details for %s in the background", ns.Plural(#queue, "item"))
-  if not warmTicker then warmTicker = C_Timer.NewTicker(WARM_TICK, WarmTick) end
+  WarmIDs(ItemIDs())
 end
 
 ns.On("GET_ITEM_INFO_RECEIVED", function(id, success)
@@ -174,34 +198,358 @@ local function Money(copper)
   return tostring(copper) .. "c"
 end
 
--- All rows we can show: resolved names only.
 local state -- (below) this session's selection; state.neutral = the Neutral AH tab
 
-local function BuildRows()
-  local rows, book = {}, Book()
-  local source = state.neutral and ns.NeutralEntries() or ns.PriceEntries()
-  for _, e in ipairs(source) do
-    local key = e[1]
-    local id = ns.ItemIDFromKey(key)
-    local known = id and book[id]
-    if known then
-      local _, _, _, equipLoc, icon, classID, subClassID = GetInstant(id)
-      local extra = key:match("^g:%d+:(%d+)")
-      local suffix = ns.SuffixName(key) -- "of the Whale", not Auctionator's index
-      local name = known[1]
-      if suffix then name = name .. " " .. suffix end
-      rows[#rows + 1] = {
-        key = key, id = id, name = name, lname = name:lower(), extra = extra and ("ilvl " .. extra) or nil,
-        quality = known[2], level = known[3] or 0, price = e[2], seen = e[3], avail = e[4],
-        icon = icon, classID = classID or -1, subClassID = subClassID or -1,
-        slot = ns.SlotOf(equipLoc),
-        -- bags and quivers: their slot count, the category browser's third level
-        bagSlots = (classID == 1 or classID == 11) and ns.BagSlotsOf(id) or nil,
-      }
+-- One set of rows per tab ([false] your faction's auction house, [true] neutral):
+--   rows    every row we can show, kept sorted by the column sort (Less, below)
+--   byKey   price key -> its row; false = grey or not an item (skipped)
+--   changed price keys whose price moved since the rows were last brought up to date
+--   all     true = make every row again (first time, a new list, a whole-list change)
+--   gen     bumped whenever rows change, so a narrowed search knows its base is stale
+local tabs = {}
+local building -- the background build in progress: { t = tab, co = coroutine }
+local StartBuild
+local function Tab(neutral)
+  neutral = neutral and true or false
+  local t = tabs[neutral]
+  if not t then
+    t = { rows = {}, byKey = {}, changed = {}, nChanged = 0, all = true, gen = 0, neutral = neutral }
+    tabs[neutral] = t
+  end
+  return t
+end
+
+-- Sync.lua / Neutral.lua: this price key's price or seen time moved (key nil = the whole list).
+-- Nothing is redone here; the list catches up when it's next drawn (or in the background).
+function ns.PriceChanged(key, neutral)
+  local t = Tab(neutral)
+  if key == nil then
+    t.all, t.changed, t.nChanged = true, {}, 0
+    -- made again in the background a little later, so opening the list doesn't have to
+    C_Timer.After(5, function() if t.all then StartBuild(t) end end)
+  elseif not t.all and not t.changed[key] then
+    t.changed[key] = true
+    t.nChanged = t.nChanged + 1
+  end
+end
+
+-- Rows differ from what the open list last drew (drawnGen is set by Refresh).
+local function TabStale(t) return t.all or t.nChanged > 0 or t.gen ~= t.drawnGen end
+local function Building(t) return building ~= nil and building.t == t end
+
+-- The column sort, as one comparison with a total order (name, then key, breaks ties).
+local function MakeLess(key, desc)
+  return function(a, b)
+    local x, y
+    if key == "name" then x, y = a.lname, b.lname
+    elseif key == "price" then x, y = a.price, b.price
+    elseif key == "avail" then x, y = a.avail or -1, b.avail or -1
+    else x, y = b.seen, a.seen end -- "seen": most recent first
+    if x ~= y then
+      if desc then return x > y end
+      return x < y
+    end
+    if a.lname ~= b.lname then return a.lname < b.lname end
+    return a.key < b.key
+  end
+end
+local sortKey = "name"
+local Less = MakeLess("name", false)
+local function SortSig()
+  return (ns.db.priceSort or "name") .. (ns.db.priceSortDesc and "v" or "^")
+end
+
+-- A row's fixed parts (name, icon, category...). nil = no name yet (asked for; the row comes
+-- when it arrives), false = never shown (grey, or not an item).
+local function NewRow(key, neutral, missing)
+  local id = ns.ItemIDFromKey(key)
+  if not id then return false end
+  local known = Book()[id]
+  if known and known[2] == 0 then return false end -- grey: vendor trash, never bought
+  if not known or not known[3] then
+    local w = nameWait[id] or {}
+    nameWait[id] = w
+    w[key] = neutral
+    missing[#missing + 1] = id
+    if not known then return nil end -- (an old book entry has the name: shown while the rest loads)
+  end
+  local _, _, _, equipLoc, icon, classID, subClassID = GetInstant(id)
+  local extra = key:match("^g:%d+:(%d+)")
+  local suffix = ns.SuffixName(key) -- "of the Whale", not Auctionator's index
+  local name = known[1]
+  if suffix then name = name .. " " .. suffix end
+  return {
+    key = key, id = id, name = name, lname = name:lower(), extra = extra and ("ilvl " .. extra) or nil,
+    quality = known[2], level = known[3] or 0,
+    icon = icon, classID = classID or -1, subClassID = subClassID or -1,
+    slot = ns.SlotOf(equipLoc),
+    -- bags and quivers: their slot count, the category browser's third level
+    bagSlots = (classID == 1 or classID == 11) and ns.BagSlotsOf(id) or nil,
+  }
+end
+
+-- Sorting all 51k rows takes ~100 ms, too long for one frame in the background. This merge sort
+-- (stable, bottom-up) calls Yield as it goes, so a coroutine can spread it over frames.
+local function MergeSort(a, Less, Yield)
+  local n = #a
+  local src, dst = a, {}
+  local width = 1
+  while width < n do
+    local i = 1
+    while i <= n do
+      local mid, hi = math.min(i + width, n + 1), math.min(i + 2 * width, n + 1)
+      local l, r = i, mid
+      for k = i, hi - 1 do
+        if l < mid and (r >= hi or not Less(src[r], src[l])) then
+          dst[k] = src[l]
+          l = l + 1
+        else
+          dst[k] = src[r]
+          r = r + 1
+        end
+      end
+      Yield(hi - i)
+      i = hi
+    end
+    src, dst = dst, src
+    width = width * 2
+  end
+  return src
+end
+
+local function UseSort()
+  sortKey = ns.db.priceSort or "name"
+  Less = MakeLess(sortKey, ns.db.priceSortDesc and true or false)
+end
+
+-- Every row again, reusing the ones we have (their names and icons don't change). Yield: called
+-- with a work count as it goes (the background build yields on it; drawn now, it's a no-op).
+-- Prices that change meanwhile land in t.changed and are applied after.
+local function BuildTab(t, Yield)
+  local neutral = t.neutral
+  t.all, t.changed, t.nChanged = false, {}, 0
+  -- the keys first, in one go: the list can gain keys between slices, and a table can't be
+  -- walked with pairs() while keys are being added
+  local keys = neutral and ns.NeutralPriceKeys({}) or ns.PriceKeys({})
+  local PriceOf = neutral and ns.NeutralPriceOf or ns.PriceOf
+  local rows, byKey, old, missing = {}, {}, t.byKey, {}
+  for i, key in ipairs(keys) do
+    local price, seen, avail = PriceOf(key)
+    if price then
+      local row = old[key]
+      if row == nil then row = NewRow(key, neutral, missing) end
+      if row then
+        row.price, row.seen, row.avail = price, seen, avail
+        rows[#rows + 1] = row
+      end
+      if row ~= nil then byKey[key] = row end
+    end
+    if i % 500 == 0 then Yield(500) end
+  end
+  UseSort()
+  local sig = SortSig()
+  if Yield == ns.NoYield then
+    table.sort(rows, Less) -- in C: fastest when it has to happen now
+  else
+    rows = MergeSort(rows, Less, Yield) -- (its own copy of Less: a sort click meanwhile can't mix two orders)
+    if SortSig() ~= sig then sig = nil end -- the sort was changed meanwhile: Prepare re-sorts
+  end
+  t.rows, t.byKey, t.sortSig = rows, byKey, sig
+  t.gen, t.sideStale = t.gen + 1, true
+  if #missing > 0 then WarmIDs(missing) end
+end
+function ns.NoYield() end
+
+-- The first index whose row doesn't sort before this one.
+local function LowerBound(rows, row)
+  local lo, hi = 1, #rows + 1
+  while lo < hi do
+    local mid = math.floor((lo + hi) / 2)
+    if Less(rows[mid], row) then lo = mid + 1 else hi = mid end
+  end
+  return lo
+end
+
+-- A few rows moved: each is found by binary search (on its old values), taken out and put back.
+local FEW = 64
+local function ApplyFew(t, PriceOf, missing)
+  local rows, byKey = t.rows, t.byKey
+  for key in pairs(t.changed) do
+    local price, seen, avail = PriceOf(key)
+    local row = byKey[key]
+    if row then
+      local i = LowerBound(rows, row)
+      if rows[i] ~= row then -- (only if the order broke; never leave a stale row behind)
+        i = nil
+        for j = 1, #rows do if rows[j] == row then i = j break end end
+      end
+      if i then table.remove(rows, i) end
+      if price then
+        row.price, row.seen, row.avail = price, seen, avail
+        table.insert(rows, LowerBound(rows, row), row)
+      else
+        byKey[key] = nil
+        t.sideStale = true
+      end
+    elseif row == nil and price then
+      row = NewRow(key, t.neutral, missing)
+      if row then
+        row.price, row.seen, row.avail = price, seen, avail
+        table.insert(rows, LowerBound(rows, row), row)
+        t.sideStale = true
+      end
+      if row ~= nil then byKey[key] = row end
     end
   end
-  return rows
 end
+
+-- Only the rows whose prices moved. In the name sort a price change doesn't move a row, so it's
+-- updated where it is. A few moved rows are re-placed one by one; many are taken out in one
+-- pass, sorted on their own and merged back: one walk of the list however many changed.
+local function ApplyChanged(t)
+  local rows, byKey, missing = t.rows, t.byKey, {}
+  local PriceOf = t.neutral and ns.NeutralPriceOf or ns.PriceOf
+  UseSort()
+  local inPlace = sortKey == "name"
+  if not inPlace and t.nChanged <= FEW and t.sortSig == SortSig() then
+    ApplyFew(t, PriceOf, missing)
+    t.changed, t.nChanged = {}, 0
+    t.gen = t.gen + 1
+    if #missing > 0 then WarmIDs(missing) end
+    return
+  end
+  local moved, out = {}, {}
+  for key in pairs(t.changed) do
+    local price, seen, avail = PriceOf(key)
+    local row = byKey[key]
+    if row then
+      if not price then
+        byKey[key] = nil
+        out[row] = true
+      elseif inPlace then
+        row.price, row.seen, row.avail = price, seen, avail
+      else
+        out[row] = true
+        row.price, row.seen, row.avail = price, seen, avail
+        moved[#moved + 1] = row
+      end
+    elseif row == nil and price then
+      row = NewRow(key, t.neutral, missing)
+      if row then
+        row.price, row.seen, row.avail = price, seen, avail
+        moved[#moved + 1] = row
+      end
+      if row ~= nil then byKey[key] = row end
+    end
+  end
+  t.changed, t.nChanged = {}, 0
+  if next(out) or #moved > 0 then
+    local kept = rows
+    if next(out) then
+      kept = {}
+      for _, row in ipairs(rows) do
+        if not out[row] then kept[#kept + 1] = row end
+      end
+    end
+    -- each moved row's place is found by binary search, and the kept rows between are copied
+    -- across: about one comparison per row moved (times log n), not one per row in the list
+    table.sort(moved, Less)
+    local merged, n, pos, nk = {}, 0, 1, #kept
+    for _, m in ipairs(moved) do
+      local lo, hi = pos, nk + 1
+      while lo < hi do
+        local mid = math.floor((lo + hi) / 2)
+        if Less(kept[mid], m) then lo = mid + 1 else hi = mid end
+      end
+      for i = pos, lo - 1 do
+        n = n + 1
+        merged[n] = kept[i]
+      end
+      n = n + 1
+      merged[n] = m
+      pos = lo
+    end
+    for i = pos, nk do
+      n = n + 1
+      merged[n] = kept[i]
+    end
+    t.rows = merged
+    t.sideStale = true
+  end
+  t.gen = t.gen + 1
+  if #missing > 0 then WarmIDs(missing) end
+end
+
+-- The background build: a few milliseconds a frame until done, then the list (if open) redraws.
+local FRAME_BUDGET = 4 -- ms per frame
+local Clock = debugprofilestop or function() return GetTime() * 1000 end
+StartBuild = function(t)
+  if building or not t.all then return end
+  local spent, sliceStart = 0, 0
+  local b
+  local function Yield(n)
+    if b.now then return end -- Prepare is finishing it this frame
+    spent = spent + n
+    if spent >= 400 then
+      spent = 0
+      if Clock() - sliceStart > FRAME_BUDGET then coroutine.yield() end
+    end
+  end
+  b = { t = t, co = coroutine.create(function() BuildTab(t, Yield) end) }
+  building = b
+  local function Step()
+    if building ~= b then return end
+    sliceStart = Clock()
+    local ok, err = coroutine.resume(b.co)
+    if not ok then
+      building = nil
+      t.all = true -- drawn in one go next time the list opens
+      ns.Log("Price List background build failed: %s", tostring(err))
+      return
+    end
+    if coroutine.status(b.co) == "dead" then
+      building = nil
+      if onProgress then onProgress() end -- open: show the new rows
+      for _, other in pairs(tabs) do -- the other tab was waiting its turn
+        if other.all then C_Timer.After(1, function() StartBuild(other) end) end
+      end
+    else
+      C_Timer.After(0, Step)
+    end
+  end
+  Step()
+end
+
+-- Bring a tab's rows up to date (and into the current column sort), now.
+local function Prepare(t)
+  if building and building.t == t then
+    -- the list opened mid-build: finish it now
+    local b = building
+    b.now = true
+    while coroutine.status(b.co) ~= "dead" do
+      local ok, err = coroutine.resume(b.co)
+      if not ok then
+        ns.Log("Price List build failed: %s", tostring(err))
+        t.all = true
+        break
+      end
+    end
+    building = nil
+  end
+  if t.all then BuildTab(t, ns.NoYield) end
+  if t.nChanged > 0 then ApplyChanged(t) end
+  if t.sortSig ~= SortSig() then
+    UseSort()
+    table.sort(t.rows, Less)
+    t.sortSig, t.gen = SortSig(), t.gen + 1
+  end
+end
+
+-- After login, make the rows in the background so the first /ah opens at once.
+ns.On("PLAYER_ENTERING_WORLD", function(isLogin, isReload)
+  if not (isLogin or isReload) then return end
+  C_Timer.After(30, function() StartBuild(Tab(false)) end)
+end)
 
 ----------------------------------------------------------------------------------------------
 -- The window
@@ -216,10 +564,12 @@ local function Favorites()
   ns.db.favorites = ns.db.favorites or {}
   return ns.db.favorites
 end
-local allRows = {}
--- The filtered, sorted rows, kept between redraws: scrolling only redraws the visible lines.
+local allRows = {} -- the current tab's rows (Tab(state.neutral).rows)
+-- The filtered rows, kept between redraws: scrolling only redraws the visible lines.
 -- Remade only when the search, category, sort or the prices change (anything through Refresh).
 local visible, visibleDirty = {}, true
+local filterGen = 0 -- bumped by anything but the search box (a narrowed search can't reuse its base)
+local narrow        -- the last search's result: { list, search, gen, fgen, neutral }
 
 -- The Filter dropdown (like the auction house's): level range, usable only, uncollected only and
 -- rarity. Saved in ns.db.priceFilters. Nothing ticked = no filter; ticking turns one on. For
@@ -240,6 +590,7 @@ local function Filters()
   for q, v in pairs(f.rarity) do
     if v ~= true then f.rarity[q] = nil end -- 0.15.0 stored "hidden" as false; that meaning is gone
   end
+  f.rarity[0] = nil -- grey items aren't listed any more
   return f
 end
 
@@ -324,28 +675,29 @@ local function SortRows(rows)
     end)
     return
   end
-  local key, desc = ns.db.priceSort or "name", ns.db.priceSortDesc and true or false
-  table.sort(rows, function(a, b)
-    local x, y
-    if key == "name" then x, y = a.lname, b.lname
-    elseif key == "price" then x, y = a.price, b.price
-    elseif key == "avail" then x, y = a.avail or -1, b.avail or -1
-    else x, y = b.seen, a.seen end -- "seen": most recent first
-    if x ~= y then
-      if desc then return x > y end
-      return x < y
-    end
-    return a.lname < b.lname
-  end)
+  -- the column sort: allRows is kept in it, and filtering keeps the order
 end
 
 local function Visible()
   if not visibleDirty then return visible end
-  local list = {}
+  visibleDirty = false
   local search = state.search:lower()
   local f = Filters()
+  local filtering = FiltersActive()
+  if search == "" and not filtering and not state.favorites and not state.classID then
+    visible, narrow = allRows, nil -- nothing to filter: the sorted rows as they are
+    return visible
+  end
+  -- typing more of the same search only narrows the last result: filter that, not every row
+  local from = allRows
+  local t = Tab(state.neutral)
+  if narrow and search ~= "" and narrow.gen == t.gen and narrow.fgen == filterGen
+    and narrow.neutral == state.neutral and search:find(narrow.search, 1, true) then
+    from = narrow.list
+  end
+  local list = {}
   local favs = Favorites()
-  for _, row in ipairs(allRows) do
+  for _, row in ipairs(from) do
     if (not state.favorites or favs[row.key])
       and (not state.classID or row.classID == state.classID)
       and (not state.subClassID or row.subClassID == state.subClassID)
@@ -355,8 +707,9 @@ local function Visible()
       list[#list + 1] = row
     end
   end
-  SortRows(list)
-  visible, visibleDirty = list, false
+  if f.statSort and from == allRows then SortRows(list) end
+  visible = list
+  narrow = { list = list, search = search, gen = t.gen, fgen = filterGen, neutral = state.neutral }
   return list
 end
 
@@ -517,11 +870,21 @@ local function RefreshList()
   end
 end
 
-Refresh = function(rebuild)
+-- A first load (or a big batch of new items) shows a bar until it's in; a handful of new items
+-- just appear in the list as their names arrive.
+local BAR_FROM = 200
+local drawnTab -- the tab the list last drew
+local function ShowBar()
+  if not ns.NamesLoading() then return false end
+  local done, total = ns.NameProgress()
+  return total - done >= BAR_FROM, done, total
+end
+
+-- what: "search" = only the search text changed; nil = anything (category, filter, sort, tab...)
+Refresh = function(what)
   if not win or not win:IsShown() then return end
-  local done, total = 0, 0
-  if ns.NamesLoading() or not win.built then done, total = ns.NameProgress() end
-  if done < total then
+  local bar, done, total = ShowBar()
+  if bar then
     -- still loading item details: show the bar, not half-drawn rows
     win.loading:Show()
     win.loading.bar:SetMinMaxValues(0, math.max(total, 1))
@@ -534,22 +897,25 @@ Refresh = function(rebuild)
   win.loading:Hide()
   win.list:Show()
   win.side:Show()
-  if rebuild or not win.built then
-    allRows = BuildRows()
-    win.built = true
-    win.builtVersion = ns.dataVersion
-  end
+  local t = Tab(state.neutral)
+  Prepare(t)
+  allRows = t.rows
   if win.pickStart then
     -- just opened: Favorites if any starred item has a price, else All
     win.pickStart = false
-    local favs, any = Favorites(), false
-    for _, row in ipairs(allRows) do
-      if favs[row.key] then any = true; break end
+    local any = false
+    for key in pairs(Favorites()) do
+      if t.byKey[key] then any = true; break end
     end
     state.favorites, state.classID, state.subClassID, state.slots = any, nil, nil, nil
     win.list.offset, win.side.offset = 0, 0
   end
-  visibleDirty, sideDirty = true, true -- search, category, sort or prices may have changed
+  if what ~= "search" then filterGen = filterGen + 1 end
+  -- the sidebar counts don't depend on the search, nor on prices: only on which rows exist
+  if what == nil or t.sideStale then sideDirty = true end
+  t.sideStale = false
+  if what ~= "prices" or t.gen ~= t.drawnGen or drawnTab ~= t then visibleDirty = true end
+  t.drawnGen, drawnTab = t.gen, t
   RefreshSide()
   RefreshList()
 end
@@ -586,7 +952,7 @@ function ns.ShowPriceTab(neutral)
   state.neutral = neutral and true or false
   win.pickStart = true -- Favorites if any in this list, else All
   win.list.offset, win.side.offset = 0, 0
-  Refresh(true)
+  Refresh()
 end
 -- opening a neutral auction house with the Price List open: show its tab
 ns.OnNeutralChanged = function()
@@ -684,12 +1050,28 @@ local function Build()
   end)
   clearSearch:Hide()
 
-  search:SetScript("OnTextChanged", function(self)
-    state.search = self:GetText() or ""
-    clearSearch:SetShown(state.search ~= "")
-    hint:SetShown(state.search == "" and not self:HasFocus())
+  -- Typing waits for a short pause before the list is filtered (Enter: at once); a cleared box
+  -- or text set by code (a shift-clicked link) applies at once.
+  local SEARCH_DELAY = 0.3
+  local searchTimer
+  local function ApplySearch()
+    if searchTimer then searchTimer:Cancel() searchTimer = nil end
+    local text = search:GetText() or ""
+    if text == state.search then return end
+    state.search = text
     win.list.offset = 0
-    Refresh()
+    Refresh("search")
+  end
+  search:SetScript("OnTextChanged", function(self, userInput)
+    local text = self:GetText() or ""
+    clearSearch:SetShown(text ~= "")
+    hint:SetShown(text == "" and not self:HasFocus())
+    if searchTimer then searchTimer:Cancel() searchTimer = nil end
+    if not userInput or text == "" then
+      ApplySearch()
+    else
+      searchTimer = C_Timer.NewTimer(SEARCH_DELAY, ApplySearch)
+    end
   end)
   -- clicking in selects everything, so typing replaces it (a frame later: the click's cursor
   -- placement would undo it otherwise)
@@ -699,7 +1081,10 @@ local function Build()
   end)
   search:SetScript("OnEditFocusLost", function(self) hint:SetShown((self:GetText() or "") == "") end)
   search:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-  search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+  search:SetScript("OnEnterPressed", function(self)
+    ApplySearch()
+    self:ClearFocus()
+  end)
   win.search = search
 
   -- Filter: a dropdown panel like the auction house's
@@ -798,7 +1183,7 @@ local function Build()
   y = y - 8
 
   Header("Rarity")
-  local RARITIES = { { 0, "Poor" }, { 1, "Common" }, { 2, "Uncommon" }, { 3, "Rare" }, { 4, "Epic" }, { 5, "Legendary" } }
+  local RARITIES = { { 1, "Common" }, { 2, "Uncommon" }, { 3, "Rare" }, { 4, "Epic" }, { 5, "Legendary" } }
   for _, q in ipairs(RARITIES) do
     local r, g, b = QualityColor(q[1])
     panel.checks[#panel.checks + 1] = Check(q[2], { r, g, b },
@@ -1322,17 +1707,18 @@ local function Build()
   win:SetScript("OnShow", function()
     win.pickStart = true
     state.neutral = ns.atNeutralAH and true or false
-    ns.WarmNames()
+    -- the warm-up: the bar while it's big, else the new names drop into the list
     onProgress = function()
-      local done, total = ns.NameProgress()
-      Refresh(done >= total)
+      if win.loading:IsShown() or ShowBar() then Refresh()
+      elseif TabStale(Tab(state.neutral)) and not Building(Tab(state.neutral)) then Refresh("prices") end
     end
-    Refresh(true)
+    Refresh()
   end)
   win:SetScript("OnHide", function() onProgress = nil end)
-  -- prices can change while it's open (a scan, a sync): rebuild only when they actually have
+  -- prices can change while it's open (a scan, a sync): only the rows that moved are redone
   C_Timer.NewTicker(5, function()
-    if win:IsShown() and win.builtVersion ~= ns.dataVersion then Refresh(true) end
+    local t = Tab(state.neutral)
+    if win:IsShown() and not win.loading:IsShown() and TabStale(t) and not Building(t) then Refresh("prices") end
   end)
   win:Hide()
 end

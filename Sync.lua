@@ -176,6 +176,46 @@ function ns.PriceEntries()
   return list
 end
 
+-- The same without building a table per price: fn(key, price, seen at, available).
+function ns.ForEachPrice(fn)
+  local r, db = Realm(), DB()
+  if not r or not db or type(db.db) ~= "table" then return end
+  local dz = DayZero()
+  for key, entry in pairs(db.db) do
+    if type(entry) == "table" and (entry.m or 0) > 0 then
+      key = tostring(key)
+      local ts = SeenAt(r, key, entry)
+      local a = entry.a and entry.a[tostring(floor((ts - dz) / 86400))]
+      fn(key, entry.m, ts, a)
+    end
+  end
+end
+
+-- Every price key, nothing else (cheap: the Price List snapshots these before a sliced build).
+function ns.PriceKeys(out)
+  local db = DB()
+  if not db or type(db.db) ~= "table" then return out end
+  for key in pairs(db.db) do out[#out + 1] = tostring(key) end
+  return out
+end
+
+-- One price: price, seen at, available; nil when the list has none for this key.
+function ns.PriceOf(key)
+  local r, db = Realm(), DB()
+  if not r or not db or type(db.db) ~= "table" then return nil end
+  local entry = db.db[key]
+  if type(entry) ~= "table" or (entry.m or 0) <= 0 then return nil end
+  local ts = SeenAt(r, key, entry)
+  local a = entry.a and entry.a[tostring(floor((ts - DayZero()) / 86400))]
+  return entry.m, ts, a
+end
+
+-- Tells the Price List which rows to redo (it's defined in Prices.lua, loaded after this).
+-- key nil = the whole list.
+local function PriceChanged(key)
+  if ns.PriceChanged then ns.PriceChanged(key, false) end
+end
+
 -- The latest price change (the "price check" item in /async). synced = came in through a sync.
 local function NoteChange(r, key, price, was, synced)
   if not ns.ItemIDFromKey(key) then return end
@@ -197,6 +237,7 @@ end
 -- sectionKeys[s] = { [text key] = Auctionator's key }: which prices are in each section, kept as
 -- prices change, so sending a few sections never walks the whole list.
 local sections, sectionKeys, itemCount = {}, {}, 0
+local fpTotal = 0 -- the sum of every section (mod 2^32), kept as they change: ns.Fingerprint is hot
 local newestTs = 0 -- when the newest price in this list was seen (shared as nt)
 function ns.NewestPrice() return newestTs end
 for i = 0, SECTIONS - 1 do
@@ -224,12 +265,16 @@ local function Track(key, oldPrice, newPrice, orig)
   if rebuilding and not inRebuild then rebuilding.dirty = true end -- a price moved under the rebuild
   local s = SectionOf(key)
   if oldPrice and oldPrice > 0 then
-    sections[s] = (sections[s] - Hash(key .. ":" .. oldPrice)) % TWO32
+    local h = Hash(key .. ":" .. oldPrice)
+    sections[s] = (sections[s] - h) % TWO32
+    fpTotal = (fpTotal - h) % TWO32
     itemCount = itemCount - 1
     if not (newPrice and newPrice > 0) then sectionKeys[s][key] = nil end
   end
   if newPrice and newPrice > 0 then
-    sections[s] = (sections[s] + Hash(key .. ":" .. newPrice)) % TWO32
+    local h = Hash(key .. ":" .. newPrice)
+    sections[s] = (sections[s] + h) % TWO32
+    fpTotal = (fpTotal + h) % TWO32
     itemCount = itemCount + 1
     sectionKeys[s][key] = orig or key
   end
@@ -290,9 +335,7 @@ local function UnpackSections(packed)
 end
 
 function ns.Fingerprint()
-  local total = 0
-  for i = 0, SECTIONS - 1 do total = (total + sections[i]) % TWO32 end
-  return string.format("%08x-%d", total, itemCount)
+  return string.format("%08x-%d", fpTotal, itemCount)
 end
 
 local function ResetFingerprint()
@@ -300,7 +343,7 @@ local function ResetFingerprint()
     sections[i] = 0
     wipe(sectionKeys[i])
   end
-  itemCount = 0
+  itemCount, fpTotal = 0, 0
 end
 
 ----------------------------------------------------------------------------------------------
@@ -320,6 +363,7 @@ local function OnLocalPrice(key, price, available)
   r.ts[key] = ns.Now()
   newestTs = math.max(newestTs, r.ts[key])
   ns.dataVersion = ns.dataVersion + 1
+  PriceChanged(key)
   local before = known[key]
   if before == price then return end -- same price seen again: nothing changed
   if pending[key] == nil then pending[key] = before or 0 end
@@ -464,6 +508,7 @@ function ns.HookAuctionator()
   local db = DB()
   if not db or db == hookedDB or type(db.SetPrice) ~= "function" then return end
   hookedDB = db
+  PriceChanged(nil) -- a new list (login, realm change): the Price List starts over
   local r0 = Realm()
   -- old text suffix keys: once per realm (synced prices arrive already converted)
   if type(db.db) == "table" and r0 and SuffixLabels() and not r0.suffixFold then
@@ -516,8 +561,10 @@ local function Apply(r, key, price, available, ts, force)
     r.ts[key] = ts
     newestTs = math.max(newestTs, ts)
     ns.dataVersion = ns.dataVersion + 1
+    PriceChanged(key)
   end
   if entry.m == price then return "same" end
+  PriceChanged(key)
 
   local was = entry.m
   entry.m = price
@@ -1378,6 +1425,7 @@ local function NoteState(peer, msg, isHello)
   peer.ra, peer.rt, peer.sa, peer.st2 = tonumber(msg.ra), tonumber(msg.rt), tonumber(msg.sa), tonumber(msg.st2)
   peer.lastHeard = ns.Now()
   if isHello or wasOffline then
+    peer.inSync = nil
     ns.Log("%s came online (v%s)", peer.name, tostring(peer.version))
   end
   if msg.st == "syncing" and was ~= "syncing" and msg.w then
@@ -1386,13 +1434,20 @@ local function NoteState(peer, msg, isHello)
   if peer.hl > 0 and peer.hl ~= wasHl then
     ns.Detail("%s is hosting %s", peer.name, ns.Plural(peer.hl, "handshake"))
   end
+  -- Logged when they become in sync (or drift out of it), not on every fingerprint change: a
+  -- host merging someone's handshake changes its fingerprint every few seconds while staying in
+  -- sync, and each of those used to log "is in sync" again.
   if msg.st == "ready" and (was ~= "ready" or wasD ~= msg.d) then
     local master = ns.Master()
-    if master and msg.d == master then
+    local inSync = master ~= nil and msg.d == master
+    if inSync and not peer.inSync then
       ns.Log("%s is in sync", peer.name)
-    else
+    elseif not inSync and peer.inSync ~= false then
       ns.Detail("%s is ready, but their prices differ from the master list", peer.name)
     end
+    peer.inSync = inSync
+  elseif msg.st ~= "ready" then
+    peer.inSync = nil
   end
 end
 
