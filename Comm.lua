@@ -10,6 +10,16 @@
 local _, ns = ...
 
 local CTL = ChatThrottleLib
+-- ChatThrottleLib's default cap is 800 bytes a second, chosen when an addon sent a little
+-- chat. A megaserver price list is megabytes. The library's own note says 2000 is safe
+-- when this client is the one sending; the cap is shared by every addon, so other traffic
+-- still counts against it. Leave a higher cap someone else already chose. The 20 FPS choke
+-- cuts the rate in half at a busy auction house, which is when a scan most needs to go out,
+-- so only choke once the game is actually stalled.
+if CTL then
+  if (CTL.MAX_CPS or 0) <= 800 then CTL.MAX_CPS = 2000 end
+  if (CTL.MIN_FPS or 0) >= 20 then CTL.MIN_FPS = 10 end
+end
 -- Every route is capped at 255 bytes per message, header included: addon messages by the game,
 -- and Battle.net game data by ChatThrottleLib (the game allows ~4KB, the library doesn't).
 local MAX_MESSAGE = 255
@@ -198,7 +208,11 @@ function ns.Send(target, msg, prio, id, onSent)
   local ok, err = pcall(function()
     for i = 1, total do
       local chunk = id .. ":" .. i .. ":" .. total .. ":" .. text:sub((i - 1) * size + 1, i * size)
-      local cb = (i == total and onSent) and function() onSent() end or nil
+      -- didSend is false when the game rejected the chunk. Throttling doesn't call this;
+      -- the library holds the chunk and tries again. Only an explicit false is a failure.
+      local cb = (i == total and onSent) and function(_, didSend)
+        if didSend == false then onSent(false) else onSent(true) end
+      end or nil
       if target.kind == "BN" then
         CTL:BNSendGameData(prio, ns.PREFIX, chunk, "WHISPER", target.id, "AucSync" .. target.id, cb)
       elseif target.kind == "WHISPER" then
@@ -226,10 +240,17 @@ function ns.Broadcast(msg, prio, discover, onSent)
   local id = NextId()
   -- onSent fires once, when the first route has actually sent it
   local fired = false
-  local function Sent()
+  local function Sent(ok)
+    if ok == false then
+      if onSent and not fired then
+        fired = true
+        onSent(false)
+      end
+      return
+    end
     if onSent and not fired then
       fired = true
-      onSent()
+      onSent(true)
     end
   end
   local covered = {}

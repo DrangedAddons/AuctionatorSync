@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.0
+- **Syncing a megaserver price list no longer tries to copy the whole database, and it no longer starts over when it's slow.** Comparing used 256 sections. One changed price made a section "different", and a list this size has a price in every section, so both players sent every price they had: yours up, theirs back, then the new ones out again to everyone else. The game only allows a small stream of addon messages, so that took longer than the sync was willing to wait. After 60 seconds without a batch finishing it threw the progress away, benched the other player for 10 minutes and started again. If the lists still didn't match after 2 minutes it did the whole thing once more, as a "full" sync. With a few people online those restarts piled onto a scan share, and the Sync Monitor crept along without ever reaching the end.
+- A compare is now 4,096 sections. Only the sections whose prices actually differ are sent, and they're sent once, to everyone, instead of up and then back through one player. A transfer that gets interrupted continues from the last batch that went out. Being slow is not treated as the other player having failed.
+- Prices are packed tighter on the wire. This client's send cap is raised from the library default of 800 bytes a second to 2,000 (the rate that library calls safe when you're the one sending). A busy auction house no longer cuts that rate in half unless the game is actually stalled (under 10 frames a second).
+- **Everyone in the group needs 1.6.0.** Older copies show as **needs update** and aren't synced with; their own chat tells them to update. Merging is still newest-price-wins, so prices already shared aren't thrown away.
+
 ## 1.5.1
 - Bag slot counts in the /ah category browser are listed biggest first.
 
